@@ -521,11 +521,19 @@ class NWeatherAPI:
                     daydata["native_temperature"] = float(hourlytemp)
 
                     # condition
-                    condition_hourly = dayi.select("dd.weather_box > i")[0]["class"][1].replace("ico_", "")
+                    condition_raw_hourly = dayi.select("dd.weather_box > i")
 
-                    daydata["condition"] = CONDITIONS[condition_hourly][0]
-                    daydata["condition_hour"] = condition_hourly
-                    
+                    if condition_raw_hourly is not None:
+                        condition_hourly = condition_raw_hourly[0]["class"][1]
+                                    
+                        if condition_main is not None:
+                            daydata["condition_hour"] = condition_hourly.replace("ico_", "")
+                            daydata["condition"] = CONDITIONS[condition_hourly.replace("ico_", "")][0]
+                        else:
+                            daydata["condition"] = None
+                    else:
+                        daydata["condition"] = None
+
                     if hourlytime == comptimeday:
                         daycast.append(daydata)
                     
