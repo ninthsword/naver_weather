@@ -468,8 +468,8 @@ class NWeatherAPI:
                     condition_pm = conditionRaw[1]["class"][1].replace("ico_", "")
 
                     data["condition"]    = CONDITIONS[condition_pm][0]
-                    data["condition_am"] = CONDITIONS[condition_am][0]
-                    data["condition_pm"] = CONDITIONS[condition_pm][0]
+                    data["condition_am"] = condition_am
+                    data["condition_pm"] = condition_pm
 
                     # rain_rate
                     rainRaw = di.select("div.cell_weather > span > span.weather_left > span.rainfall")
