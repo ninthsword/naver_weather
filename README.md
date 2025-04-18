@@ -1,12 +1,12 @@
 Custom from [miumi](https://github.com/miumida/naver_weather)
 
-v2.5.1-0.1
+v2.5.3-0.2
 
 # 네이버 날씨 for HA
 
 ![HAKC)][hakc-shield]
 ![HACS][hacs-shield]
-![Version v2.5.1][version-shield]
+![Version v2.5.3][version-shield]
 
 <a href="https://www.buymeacoffee.com/miumida" target="_blank"><img src="https://www.buymeacoffee.com/assets/img/custom_images/white_img.png" alt="Buy Me A Coffee"></a>
 
@@ -65,28 +65,29 @@ v2.5.1-0.1
 | v2.2.3 | 2022.09.06  | - 자외선 등급 추가<br> - 내일오전날씨, 내일오후날씨 api 로직 수정<br> - 오늘비시작시간, 오늘내일비시작시간 api 로직 수정  |
 | v2.2.4 | 2022.09.23  | 미세먼지, 초미세먼지 device_class(pm25) 추가  |
 | v2.2.5 | 2022.12.29  | 주간예보에 오늘날씨 포함 옵션   |
-| v2.2.6 | 2023.04.14  | 풍속 정규식 처리 |
+| v2.2.6 | 2023.04.14  | 풍속 정규식 처리    |
 | v2.2.7 | 2023.07.28  | DeviceEntryType -> entry_type   |
 | v2.2.8 | 2023.07.29  | DeviceEntryType 원복  |
-| v2.3.0 | 2023.10.12  | WeatherEntity 업데이트 대응  |
+| v2.3.0 | 2023.10.12  | WeatherEntity 업데이트 대응 |
 | v2.3.3 | 2024.02.27  | DeprecatedConstant 업데이트 대응, FORECAST_TWICE_DAILY 적용 |
 | v2.4.1 | 2024.03.25  | FORECAST_DAILY 지원 |
 | v2.5.1 | 2024.11.06  | api_nweather.py 수정 |
+| v2.5.3 | 2025.03.22  | 네이버 미세먼지 페이지 변경 대응 |
 <br>
 
 ## Installation
 ### _My Home Assistant_ HACS로 설치
 - 아래 링크를 클릭해서 이동 후 다운로드 버튼을 눌러 설치하세요.<br>
 - 다운로드 후 Home Assistant를 재시작합니다.<br>
-[![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=ninthsword&repository=naver_weather&category=integration)
+[![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=ninthsword&repository=naver_weather_custom&category=integration)
 ### Manual
-- HA 설치 경로 아래 custom_components에 naver_weather폴더 안의 전체 파일을 복사해줍니다.<br>
-  `<config directory>/custom_components/naver_weather/`<br>
+- HA 설치 경로 아래 custom_components에 naver_weather_custom폴더 안의 전체 파일을 복사해줍니다.<br>
+  `<config directory>/custom_components/naver_weather_custom/`<br>
 - configuration.yaml 파일에 설정을 추가합니다.<br>
 - Home-Assistant 를 재시작합니다<br>
 ### HACS
 - HACS > Integretions > 우측상단 메뉴 > Custom repositories 선택
-- 'https://github.com/ninthsword/naver_weather' 주소 입력, Category에 'integration' 선택 후, 저장
+- 'https://github.com/ninthsword/naver_weather_custom' 주소 입력, Category에 'integration' 선택 후, 저장
 - HACS > Integretions 메뉴 선택 후, naver_weather 검색하여 설치
 
 <br>
@@ -153,12 +154,11 @@ area는 기본값으로 '날씨'로 들어갑니다.<br>
 ### 네이버 오염물질 제공정보
 |정보| 비고 |
 |-------|-------|
-|오존       ||
-|오존등급       | |
-|일산화탄소       ||
-|아황산가스       ||
-|이산화질소       ||
-|통합대기       ||
+|오존       |등급 |
+|일산화탄소       |등급|
+|아황산가스       |등급|
+|이산화질소       |등급|
+|통합대기       |등급|
 <br>
 
 #### thanks to.
@@ -166,12 +166,13 @@ area는 기본값으로 '날씨'로 들어갑니다.<br>
 - 네이버 HomeAssistant 카페 | 초후님
 - 네이버 HomeAssistant 카페 | mahlernim님
 - 네이버 HomeAssistant 카페 | 트루월드님
+- 네이버 HomeAssistant 카페 | af950833님
 
 <br>
 
 ## 참고사이트
 [1] 네이버 HomeAssistant 카페 | af950833님의 [HA] 네이버 날씨 (<https://cafe.naver.com/stsmarthome/19337>)<br>
 
-[version-shield]: https://img.shields.io/badge/version-v2.5.1-orange.svg
+[version-shield]: https://img.shields.io/badge/version-v2.5.3-orange.svg
 [hakc-shield]: https://img.shields.io/badge/HAKC-Enjoy-blue.svg
 [hacs-shield]: https://img.shields.io/badge/HACS-Custom-red.svg
