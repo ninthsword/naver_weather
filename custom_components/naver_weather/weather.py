@@ -121,7 +121,7 @@ class NWeatherMain(NWeatherDevice, WeatherEntity):
     @property
     def attribution(self):
         """Return the attribution."""
-        return {self.api.result.get(LOCATION[0])} - Weather forecast from Naver, Powered by miumida, Custom by ninthsword"
+        return f"{self.api.result.get(LOCATION[0])} - Weather forecast from Naver, Powered by miumida, Custom by ninthsword"
         #return f"{self.api.weathertype}, {self.api.result.get(LOCATION[0])} - Weather forecast from Naver, Powered by miumida, Custom by ninthsword"
 
     async def async_forecast_daily(self) -> list[Forecast] | None:
