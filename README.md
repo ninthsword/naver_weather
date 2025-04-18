@@ -81,13 +81,13 @@ v2.5.3-0.2
 - 다운로드 후 Home Assistant를 재시작합니다.<br>
 [![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=ninthsword&repository=naver_weather_custom&category=integration)
 ### Manual
-- HA 설치 경로 아래 custom_components에 naver_weather폴더 안의 전체 파일을 복사해줍니다.<br>
-  `<config directory>/custom_components/naver_weather/`<br>
+- HA 설치 경로 아래 custom_components에 naver_weather_custom폴더 안의 전체 파일을 복사해줍니다.<br>
+  `<config directory>/custom_components/naver_weather_custom/`<br>
 - configuration.yaml 파일에 설정을 추가합니다.<br>
 - Home-Assistant 를 재시작합니다<br>
 ### HACS
 - HACS > Integretions > 우측상단 메뉴 > Custom repositories 선택
-- 'https://github.com/miumida/naver_weather' 주소 입력, Category에 'integration' 선택 후, 저장
+- 'https://github.com/ninthsword/naver_weather_custom' 주소 입력, Category에 'integration' 선택 후, 저장
 - HACS > Integretions 메뉴 선택 후, naver_weather 검색하여 설치
 
 <br>
