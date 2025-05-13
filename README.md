@@ -1,6 +1,6 @@
 Custom from [miumi](https://github.com/miumida/naver_weather)
 
-v2.5.3-0.2
+v2.5.3-0.3
 
 # 네이버 날씨 for HA
 
