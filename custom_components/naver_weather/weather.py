@@ -121,8 +121,8 @@ class NWeatherMain(NWeatherDevice, WeatherEntity):
     @property
     def attribution(self):
         """Return the attribution."""
-        return f"{self.api.result.get(LOCATION[0])} - Weather forecast from Naver, Powered by miumida, Custom by ninthsword"
-        #return f"{self.api.weathertype}, {self.api.result.get(LOCATION[0])} - Weather forecast from Naver, Powered by miumida, Custom by ninthsword"
+        #return f"{self.api.result.get(LOCATION[0])} - Weather forecast from Naver, Powered by miumida, Custom by ninthsword"
+        return f"{self.api.weathertype}, {self.api.result.get(LOCATION[0])} - Weather forecast from Naver, Powered by miumida, Custom by ninthsword"
 
     async def async_forecast_daily(self) -> list[Forecast] | None:
         """Return the daily forecast in native units.
@@ -176,6 +176,8 @@ class NWeatherMain(NWeatherDevice, WeatherEntity):
                 # Not officially supported, but nice additions.
                 "condition_am": data["condition_am"],
                 "condition_pm": data["condition_pm"],
+                "weathertype_am": data["weathertype_am"],
+                "weathertype_pm": data["weathertype_pm"],
 
                 "rain_rate_am": data["rain_rate_am"],
                 "rain_rate_pm": data["rain_rate_pm"]
@@ -203,6 +205,8 @@ class NWeatherMain(NWeatherDevice, WeatherEntity):
                     # Not officially supported, but nice additions.
                     "condition_am": data["condition_am"],
                     "condition_pm": data["condition_pm"],
+                    "weathertype_am": data["weathertype_am"],
+                    "weathertype_pm": data["weathertype_pm"],
 
                     "rain_rate_am": data["rain_rate_am"],
                     "rain_rate_pm": data["rain_rate_pm"]
@@ -227,7 +231,7 @@ class NWeatherMain(NWeatherDevice, WeatherEntity):
                 #ATTR_FORECAST_WIND_SPEED: data[""],
                 
                 # Not officially supported, but nice additions.
-                "condition_hour": data["condition_hour"],
+                "weathertype_hour": data["weathertype_hour"],
                 #"condition_pm": data["condition_pm"],
     
                 "native_precipitation": data["native_precipitation"],
