@@ -478,6 +478,8 @@ class NWeatherAPI:
                     data["condition"]    = CONDITIONS[condition_pm][0]
                     data["condition_am"] = CONDITIONS[condition_am][0]
                     data["condition_pm"] = CONDITIONS[condition_pm][0]
+                    data["weathertype_am"] = condition_am
+                    data["weathertype_pm"] = condition_pm
 
                     # rain_rate
                     rainRaw = di.select("div.cell_weather > span > span.weather_left > span.rainfall")
@@ -535,7 +537,7 @@ class NWeatherAPI:
                         condition_hourly = condition_raw_hourly[0]["class"][1]
                                     
                         if condition_main is not None:
-                            daydata["condition_hour"] = condition_hourly.replace("ico_", "")
+                            daydata["weathertype_hour"] = condition_hourly.replace("ico_", "")
                             daydata["condition"] = CONDITIONS[condition_hourly.replace("ico_", "")][0]
                         else:
                             daydata["condition"] = None
