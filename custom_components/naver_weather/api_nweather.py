@@ -566,7 +566,7 @@ class NWeatherAPI:
                 daydata = daycast[i]
 
                 daydata["precipitation_probability"] = int(re2num(hourlyrainpercent))
-                daydata["native_precipitation"] = float(re2num(hourlyrainfall.strip()))
+                daydata["native_precipitation"] = float(re2float(hourlyrainfall.strip()))
                 daydata["humidity"] = float(hourlydumidity)
                 
                 forecast_hour.append(daydata)
