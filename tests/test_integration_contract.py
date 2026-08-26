@@ -2,6 +2,7 @@
 
 import asyncio
 import importlib
+import json
 import sys
 import types
 import unittest
@@ -24,9 +25,15 @@ def install_home_assistant_shims() -> None:
     bs4 = _module("bs4")
     bs4.BeautifulSoup = object
 
+    class OptionalKey(str):
+        def __new__(cls, value, default=None):
+            key = super().__new__(cls, value)
+            key.default = default
+            return key
+
     voluptuous = _module("voluptuous")
     voluptuous.Schema = lambda value: value
-    voluptuous.Optional = lambda value, default=None: value
+    voluptuous.Optional = OptionalKey
     voluptuous.All = lambda *values: values
     voluptuous.Coerce = lambda value: value
     voluptuous.Range = lambda **kwargs: kwargs
@@ -158,11 +165,16 @@ coordinator_module = importlib.import_module(
 const_module = importlib.import_module("custom_components.naver_weather_custom.const")
 
 
+_MISSING = object()
+
+
 class FakeEntry:
     """Small config-entry replacement for API and flow tests."""
 
-    def __init__(self, area="날씨", today=False, *, options=None, unique_id=None):
-        self.data = {"area": area, "today": today}
+    def __init__(self, area="날씨", today=_MISSING, *, options=None, unique_id=None):
+        self.data = {"area": area}
+        if today is not _MISSING:
+            self.data["today"] = today
         self.options = options or {}
         self.unique_id = unique_id
 
@@ -268,12 +280,29 @@ class IntegrationContractTest(unittest.TestCase):
     def test_options_keep_today_but_cannot_change_area(self):
         source = (INTEGRATION / "config_flow.py").read_text(encoding="utf-8")
         self.assertIn("CONF_TODAY", source)
+        self.assertIn("vol.Optional(CONF_TODAY, default=False)", source)
         self.assertNotIn("vol.Optional(CONF_AREA", source.split("class OptionsFlowHandler", 1)[1])
         options = config_flow_module.OptionsFlowHandler(FakeEntry("서울", today=True))
         result = asyncio.run(options.async_step_init())
         self.assertEqual(result["data_schema"], {"today": bool})
+        self.assertTrue(next(iter(result["data_schema"])).default)
         saved = asyncio.run(options.async_step_init({"today": False}))
         self.assertEqual(saved["data"], {"today": False})
+
+    def test_legacy_today_default_and_explicit_values_are_preserved(self):
+        legacy = api_module.NWeatherAPI(FakeHass(), FakeEntry(), 1)
+        self.assertTrue(legacy.today)
+        self.assertFalse(api_module.NWeatherAPI(FakeHass(), FakeEntry(today=False), 1).today)
+        self.assertTrue(api_module.NWeatherAPI(FakeHass(), FakeEntry(today=True), 1).today)
+
+        for expected in (True, False):
+            options = config_flow_module.OptionsFlowHandler(FakeEntry(today=expected))
+            form = asyncio.run(options.async_step_init())
+            self.assertEqual(next(iter(form["data_schema"])).default, expected)
+
+        legacy_options = config_flow_module.OptionsFlowHandler(FakeEntry())
+        legacy_form = asyncio.run(legacy_options.async_step_init())
+        self.assertTrue(next(iter(legacy_form["data_schema"])).default)
 
     def test_air_request_failure_is_still_one_all_or_nothing_refresh(self):
         source = (INTEGRATION / "api_nweather.py").read_text(encoding="utf-8")
@@ -286,6 +315,38 @@ class IntegrationContractTest(unittest.TestCase):
         device_source = (INTEGRATION / "nweather_device.py").read_text(encoding="utf-8")
         self.assertIn('return self.area + ":" + self.device[0]', device_source)
         self.assertIn("DOMAIN,\n                    self.area", device_source)
+
+    def test_forecast_rollover_resolvers_and_today_presentation(self):
+        fixture = json.loads(
+            (REPOSITORY / "tests/fixtures/forecast_rollover.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        reference = api_module.datetime.fromisoformat(fixture["reference"])
+        daily = [
+            api_module.resolve_daily_timestamp_kst(label, reference)
+            for label in fixture["daily_labels"]
+        ]
+        hourly = api_module.resolve_hourly_timestamps_kst(
+            fixture["hourly_labels"], reference
+        )
+        self.assertEqual(
+            [timestamp.isoformat() for timestamp in daily], fixture["expected_daily"]
+        )
+        self.assertEqual(
+            [timestamp.isoformat() for timestamp in hourly], fixture["expected_hourly"]
+        )
+        self.assertTrue(all(timestamp.tzinfo is not None for timestamp in hourly))
+        self.assertTrue(all(left < right for left, right in zip(hourly, hourly[1:])))
+
+        rows = [{"datetime": timestamp, "value": index} for index, timestamp in enumerate(daily)]
+        self.assertEqual(
+            api_module.filter_daily_forecast_rows(rows, False, reference), rows[1:]
+        )
+        self.assertEqual(
+            api_module.filter_daily_forecast_rows(rows, True, reference), rows
+        )
+        self.assertEqual(rows[0]["value"], 0)
 
 
 if __name__ == "__main__":

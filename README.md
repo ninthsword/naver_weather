@@ -100,8 +100,11 @@ All entities for one configured area share a 10-minute coordinator refresh. A fa
 refresh marks the entities unavailable rather than presenting stale weather data as
 current. The current/air requests remain one all-or-nothing refresh operation.
 
-Forecast timestamp handling and the existing `today` option behavior are unchanged
-in this release and are deferred for a separately fixture-backed compatibility change.
+Daily and hourly forecast timestamps are resolved from Naver's displayed labels in
+Korea Standard Time, including December/January rollover. The existing `today`
+option affects daily and twice-daily forecast presentation only: enabled includes
+the current KST day, while its default omits only that day. Hourly forecast data is
+unchanged.
 
 <br>
 

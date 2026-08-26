@@ -90,7 +90,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
             return self.async_create_entry(title="", data=user_input)
 
         today = self.config_entry.options.get(
-            CONF_TODAY, self.config_entry.data.get(CONF_TODAY, False)
+            CONF_TODAY, self.config_entry.data.get(CONF_TODAY, True)
         )
         return self.async_show_form(
             step_id="init",

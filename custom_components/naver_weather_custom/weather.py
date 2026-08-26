@@ -1,5 +1,5 @@
 """Support for Naver Weather Sensors."""
-from datetime import timedelta
+from datetime import datetime, timedelta
 import logging
 
 from homeassistant.components.weather import WeatherEntity
@@ -39,6 +39,7 @@ from .const import (
     WIND_DIR,
     WIND_SPEED,
 )
+from .api_nweather import KST, filter_daily_forecast_rows
 from .nweather_device import NWeatherDevice
 
 _LOGGER = logging.getLogger(__name__)
@@ -154,7 +155,10 @@ class NWeatherMain(NWeatherDevice, WeatherEntity):
     def _forecast(self, feature) -> list[Forecast] | None:
         forecast = []
 
-        for data in self.api.forecast:
+        daily_rows = filter_daily_forecast_rows(
+            self.api.forecast, bool(self.api.today), datetime.now(KST)
+        )
+        for data in daily_rows:
             #주간
             next_day = {
                 ATTR_FORECAST_TIME: data["datetime"],

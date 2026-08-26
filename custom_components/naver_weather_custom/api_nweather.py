@@ -51,6 +51,92 @@ from .const import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+KST = timezone(timedelta(hours=9))
+
+
+def _as_kst(reference: datetime) -> datetime:
+    """Return a timezone-aware reference time in Korea Standard Time."""
+    if reference.tzinfo is None:
+        return reference.replace(tzinfo=KST)
+    return reference.astimezone(KST)
+
+
+def resolve_daily_timestamp_kst(label: str | None, reference: datetime) -> datetime | None:
+    """Resolve Naver's displayed ``M.D.`` label to a KST midnight timestamp."""
+    match = re.search(r"(\d{1,2})\.(\d{1,2})\.?", label or "")
+    if match is None:
+        return None
+
+    reference_kst = _as_kst(reference)
+    month, day = (int(value) for value in match.groups())
+    candidates = []
+    for year in range(reference_kst.year - 1, reference_kst.year + 2):
+        try:
+            candidates.append(datetime(year, month, day, tzinfo=KST))
+        except ValueError:
+            continue
+    if not candidates:
+        return None
+    return min(candidates, key=lambda candidate: abs(candidate.date() - reference_kst.date()))
+
+
+def resolve_hourly_timestamps_kst(
+    labels: list[str | None], reference: datetime
+) -> list[datetime | None]:
+    """Resolve displayed hourly labels into strictly increasing KST timestamps."""
+    reference_kst = _as_kst(reference)
+    current_date = reference_kst.date()
+    previous = None
+    timestamps = []
+
+    for label in labels:
+        text = (label or "").strip()
+        explicit_date = resolve_daily_timestamp_kst(text, reference_kst)
+        if explicit_date is not None:
+            current_date = explicit_date.date()
+        elif "모레" in text:
+            current_date = reference_kst.date() + timedelta(days=2)
+        elif "내일" in text:
+            current_date = reference_kst.date() + timedelta(days=1)
+
+        hour_match = re.search(r"(?:^|\s)(\d{1,2})\s*시", text)
+        if hour_match is not None:
+            hour = int(hour_match.group(1))
+        elif explicit_date is not None or "내일" in text or "모레" in text:
+            hour = 0
+        else:
+            timestamps.append(None)
+            continue
+
+        if hour > 23:
+            timestamps.append(None)
+            continue
+
+        timestamp = datetime.combine(current_date, datetime.min.time(), tzinfo=KST)
+        timestamp += timedelta(hours=hour)
+        while previous is not None and timestamp <= previous:
+            timestamp += timedelta(days=1)
+        current_date = timestamp.date()
+        previous = timestamp
+        timestamps.append(timestamp)
+
+    return timestamps
+
+
+def filter_daily_forecast_rows(
+    rows: list[dict], include_today: bool, reference: datetime
+) -> list[dict]:
+    """Return a presentation-only daily subset without mutating the source rows."""
+    if include_today:
+        return list(rows)
+
+    today = _as_kst(reference).date()
+    return [
+        row
+        for row in rows
+        if not isinstance(row.get("datetime"), datetime)
+        or _as_kst(row["datetime"]).date() != today
+    ]
 
 
 def re2num(val):
@@ -170,7 +256,9 @@ class NWeatherAPI:
     @property
     def today(self):
         """Return area."""
-        today = self.entry.options.get(CONF_TODAY, self.entry.data.get(CONF_TODAY))
+        today = self.entry.options.get(
+            CONF_TODAY, self.entry.data.get(CONF_TODAY, True)
+        )
 
         return today
 
@@ -436,10 +524,7 @@ class NWeatherAPI:
             forecast = []
             forecast_hour = []
             
-            oritime = datetime.utcnow() + timedelta(hours=9)
-            timezone_kst = timezone(timedelta(hours=9))
-            reftime = datetime(oritime.year, oritime.month, oritime.day, hour=0, minute=0, second=0, tzinfo=timezone_kst)
-            reftimeday = datetime(oritime.year, oritime.month, oritime.day, oritime.hour, minute=0, second=0, tzinfo=timezone_kst)
+            reference_time = datetime.now(KST)
             
             bStart = False
             
@@ -455,17 +540,13 @@ class NWeatherAPI:
                 if ( not bStart ):
                     continue
 
-                dayInfo = ""
-
-                day = di.select("span.date")
-
-                for t in day:
-                    dayInfo = t.text.strip()
-
-                data["datetime"] = reftime
-                comptime = reftime.strftime("%m.%d.")
-                if comptime[0] == "0":
-                    comptime = comptime[1:]
+                dayInfo = self._bs4_select_one(
+                    di, "div > div.cell_date > span > span.date"
+                )
+                daily_timestamp = resolve_daily_timestamp_kst(dayInfo, reference_time)
+                if daily_timestamp is None:
+                    continue
+                data["datetime"] = daily_timestamp
                     
                 try:
                     # temp
@@ -497,8 +578,7 @@ class NWeatherAPI:
                     rain_a = rainRaw[1].text
                     data["rain_rate_pm"] = int(re2num(rain_a))
 
-                    if di.select_one("div > div.cell_date > span > span.date").text == comptime:
-                        forecast.append(data)
+                    forecast.append(data)
                         
                     #내일 날씨
                     if di.select_one("div > div.cell_date > span > strong.day").text == "내일":
@@ -517,22 +597,20 @@ class NWeatherAPI:
                 except Exception as ex:
                     eLog(ex)
 
-                reftime = reftime + timedelta(days=1)
-            
+
             # 시간별
             daycast = []
-            for dayi in day_info:
+            hourly_labels = [self._bs4_select_one(dayi, "dt.time") for dayi in day_info]
+            hourly_timestamps = resolve_hourly_timestamps_kst(
+                hourly_labels, reference_time
+            )
+            for dayi, hourly_timestamp in zip(day_info, hourly_timestamps):
                 daydata = {}
-                reftimeday = reftimeday + timedelta(hours=1)
-                daydata["datetime"] = reftimeday
-                
-                comptimeday = reftimeday.strftime("%H시")
+                if hourly_timestamp is None:
+                    continue
+                daydata["datetime"] = hourly_timestamp
                     
                 try:
-                    hourlytime = dayi.select_one("dt.time").text
-                    if "내일" in hourlytime or "모레" in hourlytime or "." in hourlytime:
-                        hourlytime = "00시"
-                    
                     # temp
                     hourlytemp = re2num(dayi.select_one("span.num").text)
                     daydata["native_temperature"] = float(hourlytemp)
@@ -551,8 +629,7 @@ class NWeatherAPI:
                     else:
                         daydata["condition"] = None
 
-                    if hourlytime == comptimeday:
-                        daycast.append(daydata)
+                    daycast.append(daydata)
                     
                 except Exception as ex:
                     eLog(ex)
