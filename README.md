@@ -90,6 +90,19 @@ v2.5.3-0.3
 - 'https://github.com/ninthsword/naver_weather' 주소 입력, Category에 'integration' 선택 후, 저장
 - HACS > Integretions 메뉴 선택 후, naver_weather 검색하여 설치
 
+### Custom-domain coexistence
+
+This fork intentionally installs as `custom_components/naver_weather_custom/` and
+uses the `naver_weather_custom` integration domain. This permits it to coexist with
+the upstream `naver_weather` integration without sharing files or entity identities.
+
+All entities for one configured area share a 10-minute coordinator refresh. A failed
+refresh marks the entities unavailable rather than presenting stale weather data as
+current. The current/air requests remain one all-or-nothing refresh operation.
+
+Forecast timestamp handling and the existing `today` option behavior are unchanged
+in this release and are deferred for a separately fixture-backed compatibility change.
+
 <br>
 
 ## Usage

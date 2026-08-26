@@ -3,6 +3,7 @@
   "config": {
     "abort": {
       "single_instance_allowed": "[%key:common::config_flow::abort::single_instance_allowed%]",
+      "already_configured": "This area is already configured.",
       "no_devices_found": "[%key:common::config_flow::abort::no_devices_found%]"
     },
     "step": {

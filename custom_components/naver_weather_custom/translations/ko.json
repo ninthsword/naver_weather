@@ -2,7 +2,8 @@
     "title": "\uB124\uC774\uBC84 \uB0A0\uC528",
     "config": {
         "abort": {
-            "single_instance_allowed": "\uC774\uBBF8 \uC874\uC7AC\uD569\uB2C8\uB2E4."
+            "single_instance_allowed": "\uC774\uBBF8 \uC874\uC7AC\uD569\uB2C8\uB2E4.",
+            "already_configured": "\uC774 \uC9C0\uC5ED\uC740 \uC774\uBBF8 \uC124\uC815\uB418\uC5B4 \uC788\uC2B5\uB2C8\uB2E4."
         },
         "step": {
             "confirm": {

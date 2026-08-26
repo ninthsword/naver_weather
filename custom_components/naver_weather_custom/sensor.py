@@ -1,8 +1,6 @@
 """Support for Naver Weather Sensors."""
 import logging
 
-from homeassistant.helpers.entity import Entity
-
 from .nweather_device import NWeatherDevice
 
 from .const import DOMAIN, WEATHER_INFO
@@ -24,12 +22,13 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
     """Set up sensor for Naver Weather sensors."""
 
     api = hass.data[DOMAIN]["api"][config_entry.entry_id]
+    coordinator = hass.data[DOMAIN]["coordinators"][config_entry.entry_id]
 
     def async_add_entity():
         """Add sensor from sensor."""
         entities = []
         for device in WEATHER_INFO.values():
-            entities.append(NWeatherSensor(device, api))
+            entities.append(NWeatherSensor(device, api, coordinator))
 
         if entities:
             async_add_entities(entities)
@@ -37,7 +36,7 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
     async_add_entity()
 
 
-class NWeatherSensor(NWeatherDevice, Entity):
+class NWeatherSensor(NWeatherDevice):
     """Defines a NaverWeather Device entity."""
 
     @property

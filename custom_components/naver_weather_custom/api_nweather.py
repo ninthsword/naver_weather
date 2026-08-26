@@ -42,7 +42,6 @@ from .const import (
     UDUST,
     UDUST_GRADE,
     UV_GRADE,
-    WEATHER_INFO,
     WIND_DIR,
     WIND_SPEED,
     RAINY_START,
@@ -133,6 +132,9 @@ class NWeatherAPI:
         self.entry = entry
         self.count = count
         self.result = {}
+        self.forecast = []
+        self.forecast_hour = []
+        self.weathertype = ""
         self.version = SW_VERSION
         self.model = MODEL
         self.brand = BRAND.lower()
@@ -140,6 +142,11 @@ class NWeatherAPI:
         self.unique = {}
 
         _LOGGER.debug(f"[{BRAND}] Initialize -> {self.area}")
+
+    @property
+    def logger(self):
+        """Return the integration logger for the update coordinator."""
+        return _LOGGER
 
     @property
     def area(self):
@@ -672,11 +679,6 @@ class NWeatherAPI:
             
             _LOGGER.info(f"[{BRAND}] Update weather information -> {self.result}")
             
-            for id in WEATHER_INFO.keys():
-                try:
-                    self.device_update(id)
-                except Exception as ex:
-                    _LOGGER.info(f"[{BRAND}] Update weather fail -> {ex}")
         except Exception as ex:
             _LOGGER.error(f"[{BRAND}] Failed to update NWeather API status Error: {ex}")
             raise

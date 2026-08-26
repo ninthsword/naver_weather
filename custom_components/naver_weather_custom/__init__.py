@@ -6,6 +6,7 @@ from homeassistant.core import HomeAssistant
 
 from .const import DOMAIN, PLATFORMS
 from .api_nweather import NWeatherAPI as API
+from .coordinator import NWeatherDataUpdateCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -17,10 +18,13 @@ async def async_setup(hass: HomeAssistant, config: dict):
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     """Set up naver_weather from a config entry."""
-    hass.data.setdefault(DOMAIN, {"api": {}})
+    hass.data.setdefault(DOMAIN, {"api": {}, "coordinators": {}})
     api = API(hass, entry, len(hass.data[DOMAIN]["api"]) + 1)
     hass.data[DOMAIN]["api"][entry.entry_id] = api
-    
+    coordinator = NWeatherDataUpdateCoordinator(hass, api, entry)
+    hass.data[DOMAIN]["coordinators"][entry.entry_id] = coordinator
+
+    await coordinator.async_config_entry_first_refresh()
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     
     return True
@@ -39,6 +43,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry):
         )
         if unload_ok:
             hass.data[DOMAIN]["api"].pop(entry.entry_id)
+            hass.data[DOMAIN]["coordinators"].pop(entry.entry_id)
 
         return unload_ok
     except Exception:

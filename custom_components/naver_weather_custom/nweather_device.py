@@ -2,8 +2,7 @@
 
 import logging
 
-from homeassistant.core import callback
-from homeassistant.helpers.entity import Entity
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DEVICE_REG, DEVICE_UNREG, DOMAIN, BSE_URL
 
@@ -46,16 +45,15 @@ class NWeatherBase:
         }
 
 
-class NWeatherDevice(NWeatherBase, Entity):
+class NWeatherDevice(CoordinatorEntity, NWeatherBase):
     """Defines a Pad Device entity."""
 
     TYPE = ""
 
-    def __init__(self, device, api):
+    def __init__(self, device, api, coordinator):
         """Initialize the instance."""
+        CoordinatorEntity.__init__(self, coordinator)
         super().__init__(device, api)
-        self.api.unique[self.unique_id] = {}
-        self.api.hass.data[DOMAIN][self.unique_id] = True
 
     @property
     def entity_registry_enabled_default(self):
@@ -63,27 +61,17 @@ class NWeatherDevice(NWeatherBase, Entity):
         return True
 
     async def async_added_to_hass(self):
-        """Subscribe to device events."""
-        self.register(self.unique_id, self.async_update_callback)
-        if self.device[0] == "Naver Weather Custom":
-            await self.api.update()
-        self.async_write_ha_state()
+        """Subscribe this entity to the shared coordinator."""
+        await super().async_added_to_hass()
 
     async def async_will_remove_from_hass(self) -> None:
-        """Disconnect device object when removed."""
-        if self.unique_id in self.api.hass.data[DOMAIN]:
-            self.api.hass.data[DOMAIN].pop(self.unique_id)
-        self.unregister(self.unique_id)
-
-    @callback
-    def async_update_callback(self):
-        """Update the device's state."""
-        self.async_write_ha_state()
+        """Unsubscribe this entity from the shared coordinator."""
+        await super().async_will_remove_from_hass()
 
     @property
     def available(self):
-        """Return True if device is available."""
-        return True
+        """Expose coordinator refresh failures instead of stale data."""
+        return self.coordinator.last_update_success
 
     @property
     def should_poll(self) -> bool:

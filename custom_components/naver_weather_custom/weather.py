@@ -50,12 +50,13 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
     """Add a entity from a config_entry."""
 
     api = hass.data[DOMAIN]["api"][config_entry.entry_id]
+    coordinator = hass.data[DOMAIN]["coordinators"][config_entry.entry_id]
 
     def async_add_entity():
         """Add sensor from sensor."""
         entities = []
         device = ["Naver Weather Custom", "네이버날씨Custom", "", ""]
-        entities.append(NWeatherMain(device, api))
+        entities.append(NWeatherMain(device, api, coordinator))
 
         if entities:
             async_add_entities(entities)
@@ -145,15 +146,6 @@ class NWeatherMain(NWeatherDevice, WeatherEntity):
         """
         return self._forecast_hour(WeatherEntityFeature.FORECAST_HOURLY)
         
-    @property
-    def should_poll(self) -> bool:
-        """No polling needed for this device."""
-        return True
-
-    async def async_update(self):
-        """Update current conditions."""
-        await self.api.update()
-
     @property
     def forecast(self) -> list[Forecast] | None:
         """Return the forecast."""
