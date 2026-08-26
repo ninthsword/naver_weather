@@ -17,6 +17,7 @@ class NWeatherBase:
         self.device = device
         self.api = api
         self.area = api.area
+        self._attr_unique_id = f"{self.area}:{self.device[0]}"
         self.api.init_device(self.unique_id)
         self.register = self.api.get_device(self.unique_id, DEVICE_REG)
         self.unregister = self.api.get_device(self.unique_id, DEVICE_UNREG)
@@ -53,7 +54,7 @@ class NWeatherDevice(CoordinatorEntity, NWeatherBase):
     def __init__(self, device, api, coordinator):
         """Initialize the instance."""
         CoordinatorEntity.__init__(self, coordinator)
-        super().__init__(device, api)
+        NWeatherBase.__init__(self, device, api)
 
     @property
     def entity_registry_enabled_default(self):

@@ -116,7 +116,12 @@ def install_home_assistant_shims() -> None:
                 return
             self.last_update_success = True
 
-    class CoordinatorEntity:
+    class Entity:
+        @property
+        def unique_id(self):
+            return getattr(self, "_attr_unique_id", None)
+
+    class CoordinatorEntity(Entity):
         def __init__(self, coordinator):
             self.coordinator = coordinator
 
@@ -161,6 +166,9 @@ config_flow_module = importlib.import_module(
 )
 coordinator_module = importlib.import_module(
     "custom_components.naver_weather_custom.coordinator"
+)
+device_module = importlib.import_module(
+    "custom_components.naver_weather_custom.nweather_device"
 )
 const_module = importlib.import_module("custom_components.naver_weather_custom.const")
 
@@ -226,6 +234,27 @@ class IntegrationContractTest(unittest.TestCase):
         self.assertEqual(coordinator.data, {"NowTemp": "22"})
         asyncio.run(coordinator.async_request_refresh())
         self.assertFalse(coordinator.last_update_success)
+
+    def test_concrete_device_initializes_api_and_coordinator_bases(self):
+        class ConcreteDevice(device_module.NWeatherDevice):
+            pass
+
+        api = api_module.NWeatherAPI(FakeHass(), FakeEntry("서울"), 1)
+        coordinator = types.SimpleNamespace(last_update_success=True)
+        device = ConcreteDevice(["Metric", "측정값", "", ""], api, coordinator)
+
+        self.assertIs(device.api, api)
+        self.assertEqual(device.area, "서울 날씨")
+        self.assertIs(device.coordinator, coordinator)
+        self.assertTrue(device.available)
+        self.assertEqual(device.unique_id, "서울 날씨:Metric")
+        self.assertEqual(set(api.unique), {"서울 날씨:Metric"})
+        self.assertNotIn(None, api.unique)
+        self.assertIs(device.register.__self__, api)
+        self.assertIs(device.unregister.__self__, api)
+
+        coordinator.last_update_success = False
+        self.assertFalse(device.available)
 
     def test_first_refresh_failure_remains_an_error(self):
         entry = FakeEntry()
