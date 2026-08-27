@@ -191,12 +191,13 @@ def install_home_assistant_shims() -> None:
         TEMPERATURE="temperature", HUMIDITY="humidity", PM25="pm25"
     )
     const.UnitOfTemperature = types.SimpleNamespace(CELSIUS="°C")
+    const.UnitOfDensity = types.SimpleNamespace(
+        MICROGRAMS_PER_CUBIC_METER="µg/m³"
+    )
     const.UnitOfPrecipitationDepth = types.SimpleNamespace(MILLIMETERS="mm")
     const.UnitOfSpeed = types.SimpleNamespace(METERS_PER_SECOND="m/s")
     const.UnitOfVolumetricFlux = types.SimpleNamespace(MILLIMETERS_PER_HOUR="mm/h")
     const.PERCENTAGE = "%"
-    const.CONCENTRATION_PARTS_PER_MILLION = "ppm"
-    const.CONCENTRATION_MICROGRAMS_PER_CUBIC_METER = "µg/m³"
 
 
 install_home_assistant_shims()
