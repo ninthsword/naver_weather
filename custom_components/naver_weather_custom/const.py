@@ -131,9 +131,9 @@ RAINY_START_TMR = ["rainyStartTmr", "비시작시간오늘내일", "", "mdi:weat
 
 RAIN_PERCENT = ["rainPercent", "강수확률", "%", "mdi:weather-rainy", ""]
 
-PUBLIC_TIME_C = ["publicTimeC", "현재날씨 발표시간",   "", "mdi:time", ""]
-PUBLIC_TIME_H = ["publicTimeH", "시간별날씨 발표시간", "", "mdi:time", ""]
-PUBLIC_TIME_W = ["publicTimeW", "주간날씨 발표시간",   "", "mdi:time", ""]
+PUBLIC_TIME_C = ["publicTimeC", "현재 및 1시간예보 발표시간", "", "mdi:time", ""]
+PUBLIC_TIME_H = ["publicTimeH", "시간별예보 발표시간", "", "mdi:time", ""]
+PUBLIC_TIME_W = ["publicTimeW", "주간예보 발표시간", "", "mdi:time", ""]
 
 WEATHER_INFO = {
     LOCATION[0]: LOCATION,
@@ -165,4 +165,7 @@ WEATHER_INFO = {
     RAINY_START_TMR[0]: RAINY_START_TMR,
     RAIN_PERCENT[0]: RAIN_PERCENT,
     NOW_WEATHER[0]: NOW_WEATHER,
+    PUBLIC_TIME_C[0]: PUBLIC_TIME_C,
+    PUBLIC_TIME_H[0]: PUBLIC_TIME_H,
+    PUBLIC_TIME_W[0]: PUBLIC_TIME_W,
 }

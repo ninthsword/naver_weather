@@ -1,9 +1,13 @@
 """Support for Naver Weather Sensors."""
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import logging
 
 from homeassistant.components.weather import WeatherEntity
-from homeassistant.const import UnitOfTemperature
+from homeassistant.const import (
+    UnitOfPrecipitationDepth,
+    UnitOfSpeed,
+    UnitOfTemperature,
+)
 
 from homeassistant.components.weather import (
     ATTR_CONDITION_CLEAR_NIGHT,
@@ -18,12 +22,13 @@ from homeassistant.components.weather import (
     ATTR_CONDITION_SUNNY,
 
     ATTR_FORECAST_CONDITION,
+    ATTR_FORECAST_NATIVE_PRECIPITATION,
+    ATTR_FORECAST_NATIVE_TEMP,
+    ATTR_FORECAST_NATIVE_TEMP_LOW,
+    ATTR_FORECAST_NATIVE_WIND_SPEED,
     ATTR_FORECAST_PRECIPITATION_PROBABILITY,
-    ATTR_FORECAST_TEMP,
-    ATTR_FORECAST_TEMP_LOW,
     ATTR_FORECAST_TIME,
     ATTR_FORECAST_WIND_BEARING,
-    ATTR_FORECAST_WIND_SPEED,
 
     DOMAIN as SENSOR_DOMAIN,
     Forecast,
@@ -47,6 +52,23 @@ _LOGGER = logging.getLogger(__name__)
 SCAN_INTERVAL = timedelta(minutes=10)
 
 
+def _forecast_datetime(value) -> str | None:
+    """Return a forecast timestamp as a UTC RFC3339 string for Home Assistant."""
+    if isinstance(value, datetime):
+        timestamp = value
+    elif isinstance(value, str):
+        try:
+            timestamp = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    else:
+        return None
+
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=KST)
+    return timestamp.astimezone(timezone.utc).isoformat()
+
+
 async def async_setup_entry(hass, config_entry, async_add_entities):
     """Add a entity from a config_entry."""
 
@@ -68,6 +90,8 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
 class NWeatherMain(NWeatherDevice, WeatherEntity):
     """Representation of a weather condition."""
     _attr_native_temperature_unit = UnitOfTemperature.CELSIUS
+    _attr_native_precipitation_unit = UnitOfPrecipitationDepth.MILLIMETERS
+    _attr_native_wind_speed_unit = UnitOfSpeed.METERS_PER_SECOND
     _attr_supported_features = ( WeatherEntityFeature.FORECAST_DAILY | WeatherEntityFeature.FORECAST_TWICE_DAILY | WeatherEntityFeature.FORECAST_HOURLY )
     
     @property
@@ -101,7 +125,7 @@ class NWeatherMain(NWeatherDevice, WeatherEntity):
     def native_wind_speed(self):
         """Return the wind speed."""
         try:
-            return float(self.api.result.get(WIND_SPEED[0])) * 3.6
+            return float(self.api.result.get(WIND_SPEED[0]))
         except Exception:
             return
 
@@ -161,10 +185,10 @@ class NWeatherMain(NWeatherDevice, WeatherEntity):
         for data in daily_rows:
             #주간
             next_day = {
-                ATTR_FORECAST_TIME: data["datetime"],
+                ATTR_FORECAST_TIME: _forecast_datetime(data.get("datetime")),
                 ATTR_FORECAST_CONDITION: self._condition_daily(data["condition_am"], data["condition_pm"]),
-                ATTR_FORECAST_TEMP_LOW: data["templow"],
-                ATTR_FORECAST_TEMP: data["temperature"],
+                ATTR_FORECAST_NATIVE_TEMP_LOW: data["templow"],
+                ATTR_FORECAST_NATIVE_TEMP: data["temperature"],
                 ATTR_FORECAST_PRECIPITATION_PROBABILITY: data["rain_rate_am"],
                 #ATTR_FORECAST_WIND_BEARING: data[""],
                 #ATTR_FORECAST_WIND_SPEED: data[""],
@@ -189,10 +213,10 @@ class NWeatherMain(NWeatherDevice, WeatherEntity):
             if feature == WeatherEntityFeature.FORECAST_TWICE_DAILY:
                 #야간
                 next_day = {
-                    ATTR_FORECAST_TIME: data["datetime"],
+                    ATTR_FORECAST_TIME: _forecast_datetime(data.get("datetime")),
                     ATTR_FORECAST_CONDITION: data["condition_pm"],
-                    ATTR_FORECAST_TEMP_LOW: data["templow"],
-                    ATTR_FORECAST_TEMP: data["temperature"],
+                    ATTR_FORECAST_NATIVE_TEMP_LOW: data["templow"],
+                    ATTR_FORECAST_NATIVE_TEMP: data["temperature"],
                     ATTR_FORECAST_PRECIPITATION_PROBABILITY: data["rain_rate_pm"],
                     #ATTR_FORECAST_WIND_BEARING: data[""],
                     #ATTR_FORECAST_WIND_SPEED: data[""],
@@ -216,22 +240,23 @@ class NWeatherMain(NWeatherDevice, WeatherEntity):
         forecast = []
 
         for data in self.api.forecast_hour:
-            #주간
+            # Hourly parser data stays in native units until this HA boundary.
+            native_wind_speed = data.get("native_wind_speed")
+            if native_wind_speed is None:
+                native_wind_speed = data.get("wind_speed")
             next_day = {
-                ATTR_FORECAST_TIME: data["datetime"],
-                ATTR_FORECAST_CONDITION: data["condition"],
-                #ATTR_FORECAST_TEMP_LOW: data["templow"],
-                ATTR_FORECAST_TEMP: data["native_temperature"],
-                ATTR_FORECAST_PRECIPITATION_PROBABILITY: data["precipitation_probability"],
-                #ATTR_FORECAST_WIND_BEARING: data[""],
-                #ATTR_FORECAST_WIND_SPEED: data[""],
+                ATTR_FORECAST_TIME: _forecast_datetime(data.get("datetime")),
+                ATTR_FORECAST_CONDITION: data.get("condition"),
+                ATTR_FORECAST_NATIVE_TEMP: data.get("native_temperature"),
+                ATTR_FORECAST_PRECIPITATION_PROBABILITY: data.get("precipitation_probability"),
+                ATTR_FORECAST_WIND_BEARING: data.get("wind_bearing"),
+                ATTR_FORECAST_NATIVE_WIND_SPEED: native_wind_speed,
+                ATTR_FORECAST_NATIVE_PRECIPITATION: data.get("native_precipitation"),
                 
                 # Not officially supported, but nice additions.
-                "weathertype_hour": data["weathertype_hour"],
+                "weathertype_hour": data.get("weathertype_hour"),
                 #"condition_pm": data["condition_pm"],
-    
-                "native_precipitation": data["native_precipitation"],
-                "humidity": data["humidity"]
+                "humidity": data.get("humidity"),
             }
 
             forecast.append(next_day)

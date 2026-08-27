@@ -34,6 +34,9 @@ from .const import (
     SO2_GRADE,
     NO2_GRADE,
     CAI_GRADE,
+    PUBLIC_TIME_C,
+    PUBLIC_TIME_H,
+    PUBLIC_TIME_W,
     RAINFALL,
     TOMORROW_AM,
     TOMORROW_MAX,
@@ -123,6 +126,327 @@ def resolve_hourly_timestamps_kst(
     return timestamps
 
 
+PUBLICATION_TIME_SELECTOR = (
+    "div.api_subject_bx._weekly_weather_wrap "
+    "div.notice_area._related_info._info_layer_wrap "
+    "div.layer_pop._select_panel > p.desc"
+)
+PUBLICATION_TIME_LABELS = (
+    ("현재 및 1시간예보", PUBLIC_TIME_C[0]),
+    ("시간별예보", PUBLIC_TIME_H[0]),
+    ("주간예보", PUBLIC_TIME_W[0]),
+)
+PUBLICATION_TIME_PATTERN = re.compile(
+    r"(?<!\d)(\d{1,2})\.(\d{1,2})\.?\s*(\d{1,2}):(\d{2})(?!\d)"
+)
+PUBLICATION_LABEL_PATTERN = re.compile(
+    r"(?P<label>현재 및 1시간예보|시간별예보|주간예보)"
+    r"(?P<body>.*?)(?=(?:현재 및 1시간예보|시간별예보|주간예보)|$)",
+    re.DOTALL,
+)
+HOURLY_ROW_SELECTOR = "div.graph_inner._hourly_weather li._li"
+HOURLY_RAIN_PERCENT_SELECTOR = (
+    "div._hourly_rain div.climate_box div.icon_wrap ul li.data em.value"
+)
+HOURLY_RAINFALL_SELECTOR = (
+    "div._hourly_rain div.climate_box div.rainfall ul li.data div.data_inner"
+)
+HOURLY_HUMIDITY_SELECTOR = (
+    "div._hourly_humidity div.climate_box div.graph_wrap ul li.data "
+    "div.data_inner span.base_bar span.num"
+)
+HOURLY_WIND_DIRECTION_SELECTOR = (
+    "div._hourly_wind div.icon_wrap "
+    "ul li.data em.value"
+)
+HOURLY_WIND_SPEED_SELECTOR = (
+    "div._hourly_wind div.graph_wrap "
+    "ul li.data span.num"
+)
+
+
+def resolve_public_timestamp_kst(
+    label: str | None, reference: datetime
+) -> datetime | None:
+    """Resolve Naver's ``MM.DD. HH:MM`` publication label to KST."""
+    match = PUBLICATION_TIME_PATTERN.search(label or "")
+    if match is None:
+        return None
+    month, day, hour, minute = (int(value) for value in match.groups())
+    reference_kst = _as_kst(reference)
+    candidates = []
+    for year in range(reference_kst.year - 1, reference_kst.year + 2):
+        try:
+            candidates.append(
+                datetime(year, month, day, hour, minute, tzinfo=KST)
+            )
+        except ValueError:
+            continue
+    if not candidates:
+        return None
+    return min(candidates, key=lambda candidate: abs(candidate - reference_kst))
+
+
+def _node_text(node: object) -> str:
+    """Return a node's visible text without making malformed HTML fatal."""
+    try:
+        get_text = getattr(node, "get_text", None)
+        if callable(get_text):
+            return str(get_text("\n", strip=True) or "").strip()
+        return str(getattr(node, "text", "") or "").strip()
+    except Exception:
+        return ""
+
+
+def parse_publication_times(
+    soup: object, reference: datetime
+) -> dict[str, str | None]:
+    """Parse the three weather-panel publication lines into ISO-8601 KST."""
+    publication_times = {key: None for _, key in PUBLICATION_TIME_LABELS}
+    try:
+        notices = soup.select(PUBLICATION_TIME_SELECTOR)
+    except Exception:
+        return publication_times
+    for notice in notices or []:
+        text = " ".join(_node_text(notice).split())
+        for match in PUBLICATION_LABEL_PATTERN.finditer(text):
+            key = dict(PUBLICATION_TIME_LABELS).get(match.group("label"))
+            timestamp = resolve_public_timestamp_kst(match.group("body"), reference)
+            if timestamp is not None:
+                publication_times[key] = timestamp.isoformat()
+    return publication_times
+
+
+WIND_DIRECTION_DEGREES = {
+    "북": 0,
+    "북북동": 22.5,
+    "북동": 45,
+    "동북동": 67.5,
+    "동": 90,
+    "동남동": 112.5,
+    "남동": 135,
+    "남남동": 157.5,
+    "남": 180,
+    "남남서": 202.5,
+    "남서": 225,
+    "서남서": 247.5,
+    "서": 270,
+    "서북서": 292.5,
+    "북서": 315,
+    "북북서": 337.5,
+}
+WIND_DIRECTION_ALIASES = {
+    "N": 0,
+    "NNE": 22.5,
+    "NE": 45,
+    "ENE": 67.5,
+    "E": 90,
+    "ESE": 112.5,
+    "SE": 135,
+    "SSE": 157.5,
+    "S": 180,
+    "SSW": 202.5,
+    "SW": 225,
+    "WSW": 247.5,
+    "W": 270,
+    "WNW": 292.5,
+    "NW": 315,
+    "NNW": 337.5,
+}
+
+
+def parse_wind_direction(value: str | None) -> float | None:
+    """Map Korean or compass wind-direction variants to degrees."""
+    if not isinstance(value, str):
+        return None
+    text = "".join((value or "").split())
+    for direction in sorted(WIND_DIRECTION_DEGREES, key=len, reverse=True):
+        if direction in text:
+            return WIND_DIRECTION_DEGREES[direction]
+    upper = text.upper()
+    for direction, degrees in WIND_DIRECTION_ALIASES.items():
+        if re.search(rf"(?<![A-Z]){direction}(?![A-Z])", upper):
+            return degrees
+    return None
+
+
+def parse_wind_text(value: str | None) -> tuple[float | None, float | None]:
+    """Parse one wind label as ``(bearing_degrees, native_meters_per_second)``."""
+    text = value if isinstance(value, str) else ""
+    bearing = parse_wind_direction(text)
+    speed_match = re.search(
+        r"(-?\d+(?:\.\d+)?)\s*(?:m\s*/\s*s|미터/?초)", text, re.I
+    )
+    if speed_match is None:
+        speed_text = re2float(text)
+    else:
+        speed_text = speed_match.group(1)
+    try:
+        speed = float(speed_text) if speed_text is not None else None
+    except (TypeError, ValueError):
+        speed = None
+    return bearing, speed
+
+
+def _select_nodes(container: object, selector: str) -> list[object]:
+    try:
+        return list(container.select(selector) or [])
+    except Exception:
+        return []
+
+
+def _node_classes(node: object) -> list[str]:
+    try:
+        classes = node.get("class", [])
+    except Exception:
+        try:
+            classes = node["class"]
+        except Exception:
+            classes = []
+    if isinstance(classes, str):
+        return classes.split()
+    return [item for item in classes if isinstance(item, str)]
+
+
+def _condition_from_node(node: object) -> tuple[str | None, str | None]:
+    for class_name in _node_classes(node):
+        if not class_name.startswith("ico_"):
+            continue
+        weathertype = class_name[4:]
+        condition = CONDITIONS.get(weathertype, [None])[0]
+        if condition is not None:
+            return weathertype, condition
+    return None, None
+
+
+def _hourly_condition_values(rows: list[object]) -> list[tuple[str | None, str | None]]:
+    values = []
+    for row in rows:
+        icons = _select_nodes(row, "dd.weather_box > i")
+        values.append(_condition_from_node(icons[0]) if icons else (None, None))
+    return values
+
+
+def _hourly_wind_values(
+    panel: object, row_count: int
+) -> list[tuple[float | None, float | None]]:
+    """Align independent direction and speed arrays to hourly weather rows."""
+    directions = _select_nodes(panel, HOURLY_WIND_DIRECTION_SELECTOR)
+    speeds = _select_nodes(panel, HOURLY_WIND_SPEED_SELECTOR)
+    values = []
+    for index in range(row_count):
+        direction = (
+            parse_wind_direction(_node_text(directions[index]))
+            if index < len(directions)
+            else None
+        )
+        speed = (
+            _optional_float(_node_text(speeds[index]))
+            if index < len(speeds)
+            else None
+        )
+        values.append((direction, speed))
+    return values
+
+
+def _optional_float(value: str | None) -> float | None:
+    if not value or value.strip() in {"-", "—", "없음"}:
+        return None
+    try:
+        parsed = re2float(value)
+        return float(parsed) if parsed is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _optional_probability(value: str | None) -> int | None:
+    if not value or value.strip() in {"-", "—", "없음"}:
+        return 0 if value and value.strip() == "-" else None
+    parsed = re2num(value)
+    try:
+        return int(parsed) if parsed is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def parse_hourly_forecast(panel: object | None, reference: datetime) -> list[dict]:
+    """Parse one open hourly panel, preserving rows when optional arrays are short."""
+    if panel is None:
+        return []
+    rows = _select_nodes(panel, HOURLY_ROW_SELECTOR)
+    if not rows:
+        return []
+    labels = []
+    temperatures = []
+    for row in rows:
+        time_node = _select_nodes(row, "dt.time")
+        temp_node = _select_nodes(row, "span.num")
+        labels.append(_node_text(time_node[0]) if time_node else None)
+        temperatures.append(
+            _optional_float(_node_text(temp_node[0]) if temp_node else None)
+        )
+    timestamps = resolve_hourly_timestamps_kst(labels, reference)
+    conditions = _hourly_condition_values(rows)
+    rain_percent = [
+        _node_text(node)
+        for node in _select_nodes(panel, HOURLY_RAIN_PERCENT_SELECTOR)
+    ]
+    rainfall = [
+        _node_text(node)
+        for node in _select_nodes(panel, HOURLY_RAINFALL_SELECTOR)
+    ]
+    humidity = [
+        _node_text(node)
+        for node in _select_nodes(panel, HOURLY_HUMIDITY_SELECTOR)
+    ]
+    winds = _hourly_wind_values(panel, len(rows))
+    forecast = []
+    for index, timestamp in enumerate(timestamps):
+        if timestamp is None:
+            continue
+        # Naver's condition and rain values on the row labelled T describe
+        # the interval immediately preceding that timestamp.  Keep the row
+        # timestamp (and temperature/wind/humidity) at its exact T index.
+        row_condition = conditions[index] if index < len(conditions) else (None, None)
+        row_percent = (
+            _optional_probability(rain_percent[index])
+            if index < len(rain_percent)
+            else None
+        )
+        row_rainfall = (
+            _optional_float(rainfall[index]) if index < len(rainfall) else None
+        )
+        bearing, speed = winds[index] if index < len(winds) else (None, None)
+        forecast.append(
+            {
+                "datetime": timestamp,
+                "native_temperature": temperatures[index],
+                "condition": row_condition[1],
+                "weathertype_hour": row_condition[0],
+                "precipitation_probability": row_percent,
+                "native_precipitation": row_rainfall,
+                "humidity": _optional_float(humidity[index])
+                if index < len(humidity)
+                else None,
+                "wind_bearing": bearing,
+                "wind_speed": speed,
+            }
+        )
+    return forecast
+
+
+def _open_hourly_panel(soup: object) -> object | None:
+    """Return the open weather panel that owns all hourly arrays."""
+    try:
+        panels = soup.select("div.open")
+    except Exception:
+        return None
+    for panel in panels or []:
+        if _select_nodes(panel, HOURLY_ROW_SELECTOR):
+            return panel
+    return None
+
+
 def filter_daily_forecast_rows(
     rows: list[dict], include_today: bool, reference: datetime
 ) -> list[dict]:
@@ -155,7 +479,7 @@ def re2float(val):
     if val is None:
         return None
 
-    r = re.compile(r"-?\d+\.?\d?")
+    r = re.compile(r"-?\d+(?:\.\d+)?")
     rtn = r.findall(val)
 
     if len(rtn) > 0:
@@ -345,6 +669,7 @@ class NWeatherAPI:
             air.raise_for_status()
 
             bs4air = BeautifulSoup(await air.text(), "html.parser")
+            reference_time = datetime.now(KST)
 
             # 지역
             LocationInfo = self._bs4_select_one(soup, "div.title_area._area_panel > h2.title")
@@ -439,17 +764,14 @@ class NWeatherAPI:
                     #eLog(gb + " / " + sunflux)
 
             # condition
-            condition_raw  = soup.select("div.weather_info > div > div > div.weather_graphic > div.weather_main > i.wt_icon")
-
-            if condition_raw is not None:
-                condition_main = condition_raw[0]["class"][1]
-                            
-                if condition_main is not None:
-                    weathertype = condition_main.replace("ico_", "")
-                    condition = CONDITIONS[condition_main.replace("ico_", "")][0]
-                else:
-                    condition = None
+            condition_raw = soup.select(
+                "div.weather_info > div > div > div.weather_graphic > "
+                "div.weather_main > i.wt_icon"
+            )
+            if condition_raw:
+                weathertype, condition = _condition_from_node(condition_raw[0])
             else:
+                weathertype = None
                 condition = None
                 
             contdition_blind_text = self._bs4_select_one(soup, "div.weather_info > div > div > div.weather_graphic > div.weather_main > i > span.blind")
@@ -459,73 +781,52 @@ class NWeatherAPI:
             rainyStart    = "비안옴"
             rainyStartTmr = "비안옴"
 
-            #시간별 날씨
-            hourly = soup.select("div > div.graph_inner._hourly_weather > ul > li > dl.graph_content")
-
+            # 시간별 날씨 is limited to the active/open weather panel.
+            hourly_panel = _open_hourly_panel(soup)
+            hourly = (
+                _select_nodes(hourly_panel, HOURLY_ROW_SELECTOR)
+                if hourly_panel is not None
+                else []
+            )
             hourly_today = True
-            hourly_tmr   = True
-            tommorow     = False
-
+            hourly_tmr = True
+            tomorrow = False
             for h in hourly:
-
-                time = self._bs4_select_one(h, "dt.time")
-                
-                if "내일" in time:
+                time_text = self._bs4_select_one(h, "dt.time") or ""
+                if "내일" in time_text:
                     hourly_today = False
-                    tommorow     = True
-
-                if "모레" in time:
+                    tomorrow = True
+                if "모레" in time_text:
                     hourly_tmr = False
-                    tommorow   = False
+                    tomorrow = False
+                if "시" not in time_text and "내일" not in time_text and "모레" not in time_text:
+                    continue
+                wt = self._bs4_select_one(h, "i.wt_icon") or ""
+                if "비" not in wt and "소나기" not in wt:
+                    continue
+                if hourly_today:
+                    hourly_today = False
+                    rainyStart = time_text
+                if hourly_tmr:
+                    hourly_tmr = False
+                    if "내일" in time_text:
+                        rainyStartTmr = "내일 00시"
+                    elif tomorrow:
+                        rainyStartTmr = f"내일 {time_text}"
+                    else:
+                        rainyStartTmr = time_text
 
-                if "시" in time or "내일" in time or "모레" in time:
+            # 내일 오전/오후 온도와 상태
+            tomorrowMTemp = "-"
+            tomorrowMState = "-"
+            tomorrowATemp = "-"
+            tomorrowAState = "-"
 
-                    try:
-                        wt = self._bs4_select_one(h, "i.wt_icon")
-                        tm = self._bs4_select_one(h, "dt.time")
-
-                        if ("비" in wt or "소나기" in wt ) and hourly_today:
-                            hourly_today = False
-                            rainyStart = tm
-
-                        if ( "비" in wt or "소나기" in wt ) and hourly_tmr:
-                            hourly_tmr = False
-                            if "내일" in tm:
-                                rainyStartTmr = "내일 00시"
-                            else:
-                                if tommorow:
-                                    rainyStartTmr = "내일 {}".format(tm)
-                                else:
-                                    rainyStartTmr = tm
-                    except Exception as exx:
-                        _LOGGER.info("except")
-            
-            # 내일 오전온도/오전상태
-            tomorrowMTemp = '-'
-            tomorrowMState = '-'
-
-            # 내일 오후온도/오후상태
-            tomorrowATemp = '-'
-            tomorrowAState = '-'
-
-            # 주간날씨
             weekly = soup.find("div", {"class": "weekly_forecast_area _toggle_panel"})
-            date_info = weekly.find_all("li", {"class": "week_item"})
-            
-            # 시간별날씨
-            daily = soup.find("div", {"class": "graph_inner _hourly_weather"})
-            day_info = daily.find_all("li", {"class": "_li"})
-            
-            dayrainpercent = soup.select("div.open > div > div > div> div > div > div._hourly_rain > div > div.climate_box > div.icon_wrap > ul > li.data > em.value")
-            dayrainfall = soup.select("div.open > div > div > div> div > div > div._hourly_rain > div > div.climate_box > div.rainfall > ul > li.data > div.data_inner")
-            dayhumidity = soup.select("div.open > div > div > div> div > div > div._hourly_humidity > div > div.climate_box > div.graph_wrap > ul > li.data > div.data_inner > span.base_bar > span.num")
-            
-            # 시간설정 및 예보 정의
+            date_info = weekly.find_all("li", {"class": "week_item"}) if weekly else []
             forecast = []
-            forecast_hour = []
-            
-            reference_time = datetime.now(KST)
-            
+            forecast_hour = parse_hourly_forecast(hourly_panel, reference_time)
+
             bStart = False
             
             for di in date_info:
@@ -598,67 +899,7 @@ class NWeatherAPI:
                     eLog(ex)
 
 
-            # 시간별
-            daycast = []
-            hourly_labels = [self._bs4_select_one(dayi, "dt.time") for dayi in day_info]
-            hourly_timestamps = resolve_hourly_timestamps_kst(
-                hourly_labels, reference_time
-            )
-            for dayi, hourly_timestamp in zip(day_info, hourly_timestamps):
-                daydata = {}
-                if hourly_timestamp is None:
-                    continue
-                daydata["datetime"] = hourly_timestamp
-                    
-                try:
-                    # temp
-                    hourlytemp = re2num(dayi.select_one("span.num").text)
-                    daydata["native_temperature"] = float(hourlytemp)
-
-                    # condition
-                    condition_raw_hourly = dayi.select("dd.weather_box > i")
-
-                    if condition_raw_hourly is not None:
-                        condition_hourly = condition_raw_hourly[0]["class"][1]
-                                    
-                        if condition_main is not None:
-                            daydata["weathertype_hour"] = condition_hourly.replace("ico_", "")
-                            daydata["condition"] = CONDITIONS[condition_hourly.replace("ico_", "")][0]
-                        else:
-                            daydata["condition"] = None
-                    else:
-                        daydata["condition"] = None
-
-                    daycast.append(daydata)
-                    
-                except Exception as ex:
-                    eLog(ex)
-            
-            daycastlength = len(daycast)
-
-            for i in range(0, daycastlength, 1): 
-              daydata={}
-              try:
-                hourlyrainpercent = dayrainpercent[i].text
-
-                if hourlyrainpercent == "-":
-                  hourlyrainpercent = "0%"
-
-                hourlyrainfall = dayrainfall[i].text
-                hourlydumidity = dayhumidity[i].text
-                
-                daydata = daycast[i]
-
-                daydata["precipitation_probability"] = int(re2num(hourlyrainpercent))
-                daydata["native_precipitation"] = float(re2float(hourlyrainfall.strip()))
-                daydata["humidity"] = float(hourlydumidity)
-                
-                forecast_hour.append(daydata)
-                
-              except Exception as ex:
-                eLog(ex)
-            
-            publicTime = self._bs4_select_one(soup, "div.relate_info > dl > dd")
+            publication_times = parse_publication_times(soup, reference_time)
 
             # 미세먼지, 초미세먼지, 오존 지수
             FineDust           = self._bs4_select_one(bs4air, "div.state_info:nth-of-type(1) div.grade div.text_box > span.num")
@@ -751,6 +992,9 @@ class NWeatherAPI:
                 RAINY_START[0]: rainyStart,
                 RAINY_START_TMR[0]: rainyStartTmr,
                 RAIN_PERCENT[0]: rainPercent,
+                PUBLIC_TIME_C[0]: publication_times[PUBLIC_TIME_C[0]],
+                PUBLIC_TIME_H[0]: publication_times[PUBLIC_TIME_H[0]],
+                PUBLIC_TIME_W[0]: publication_times[PUBLIC_TIME_W[0]],
                 "airOfferInfoUpdate": offerInfo
             }
             

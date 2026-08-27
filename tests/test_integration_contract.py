@@ -6,6 +6,7 @@ import json
 import sys
 import types
 import unittest
+from datetime import datetime
 from pathlib import Path
 
 
@@ -47,6 +48,7 @@ def install_home_assistant_shims() -> None:
     update_coordinator = _module("homeassistant.helpers.update_coordinator")
     components = _module("homeassistant.components")
     sensor = _module("homeassistant.components.sensor")
+    weather = _module("homeassistant.components.weather")
     const = _module("homeassistant.const")
 
     homeassistant.config_entries = config_entries
@@ -57,6 +59,7 @@ def install_home_assistant_shims() -> None:
     helpers.aiohttp_client = aiohttp_client
     helpers.update_coordinator = update_coordinator
     components.sensor = sensor
+    components.weather = weather
 
     class ConfigEntry:
         pass
@@ -121,6 +124,10 @@ def install_home_assistant_shims() -> None:
         def unique_id(self):
             return getattr(self, "_attr_unique_id", None)
 
+        @property
+        def device_info(self):
+            return getattr(self, "_attr_device_info", None)
+
     class CoordinatorEntity(Entity):
         def __init__(self, coordinator):
             self.coordinator = coordinator
@@ -142,10 +149,49 @@ def install_home_assistant_shims() -> None:
     aiohttp_client.async_get_clientsession = lambda hass: None
     update_coordinator.DataUpdateCoordinator = DataUpdateCoordinator
     update_coordinator.CoordinatorEntity = CoordinatorEntity
+    class WeatherEntity(Entity):
+        pass
+
+    weather.WeatherEntity = WeatherEntity
+    weather.DOMAIN = "weather"
+    weather.Forecast = dict
+    weather.WeatherEntityFeature = types.SimpleNamespace(
+        FORECAST_DAILY=1,
+        FORECAST_TWICE_DAILY=2,
+        FORECAST_HOURLY=4,
+    )
+    for name in (
+        "ATTR_CONDITION_CLEAR_NIGHT",
+        "ATTR_CONDITION_CLOUDY",
+        "ATTR_CONDITION_FOG",
+        "ATTR_CONDITION_HAIL",
+        "ATTR_CONDITION_LIGHTNING",
+        "ATTR_CONDITION_PARTLYCLOUDY",
+        "ATTR_CONDITION_POURING",
+        "ATTR_CONDITION_RAINY",
+        "ATTR_CONDITION_SNOWY",
+        "ATTR_CONDITION_SUNNY",
+    ):
+        setattr(weather, name, name.removeprefix("ATTR_CONDITION_").lower())
+    for name, value in (
+        ("ATTR_FORECAST_CONDITION", "condition"),
+        ("ATTR_FORECAST_NATIVE_PRECIPITATION", "native_precipitation"),
+        ("ATTR_FORECAST_NATIVE_TEMP", "native_temperature"),
+        ("ATTR_FORECAST_NATIVE_TEMP_LOW", "native_templow"),
+        ("ATTR_FORECAST_NATIVE_WIND_SPEED", "native_wind_speed"),
+        ("ATTR_FORECAST_PRECIPITATION_PROBABILITY", "precipitation_probability"),
+        ("ATTR_FORECAST_TEMP", "temperature"),
+        ("ATTR_FORECAST_TEMP_LOW", "templow"),
+        ("ATTR_FORECAST_TIME", "datetime"),
+        ("ATTR_FORECAST_WIND_BEARING", "wind_bearing"),
+        ("ATTR_FORECAST_WIND_SPEED", "wind_speed"),
+    ):
+        setattr(weather, name, value)
     sensor.SensorDeviceClass = types.SimpleNamespace(
         TEMPERATURE="temperature", HUMIDITY="humidity", PM25="pm25"
     )
     const.UnitOfTemperature = types.SimpleNamespace(CELSIUS="°C")
+    const.UnitOfPrecipitationDepth = types.SimpleNamespace(MILLIMETERS="mm")
     const.UnitOfSpeed = types.SimpleNamespace(METERS_PER_SECOND="m/s")
     const.UnitOfVolumetricFlux = types.SimpleNamespace(MILLIMETERS_PER_HOUR="mm/h")
     const.PERCENTAGE = "%"
@@ -171,6 +217,8 @@ device_module = importlib.import_module(
     "custom_components.naver_weather_custom.nweather_device"
 )
 const_module = importlib.import_module("custom_components.naver_weather_custom.const")
+weather_module = importlib.import_module("custom_components.naver_weather_custom.weather")
+sensor_module = importlib.import_module("custom_components.naver_weather_custom.sensor")
 
 
 _MISSING = object()
@@ -191,6 +239,37 @@ class FakeHass:
     """Only the API constructor needs a config-entry manager."""
 
     config_entries = types.SimpleNamespace(async_update_entry=lambda **kwargs: None)
+
+
+class FakeNode:
+    """Small selector-backed DOM node for parser contract tests."""
+
+    def __init__(self, text="", *, classes=None, selections=None):
+        self.text = text
+        self._classes = list(classes or [])
+        self._selections = selections or {}
+
+    def select(self, selector):
+        return self._selections.get(selector, [])
+
+    def select_one(self, selector):
+        return next(iter(self.select(selector)), None)
+
+    def get(self, key, default=None):
+        if key == "class":
+            return self._classes
+        return default
+
+    def __getitem__(self, key):
+        if key == "class":
+            return self._classes
+        raise KeyError(key)
+
+
+class FakeSoup(FakeNode):
+    """Root selector node used to keep tests dependency-free."""
+
+    pass
 
 
 class IntegrationContractTest(unittest.TestCase):
@@ -343,7 +422,240 @@ class IntegrationContractTest(unittest.TestCase):
         self.assertEqual(const_module.DOMAIN, "naver_weather_custom")
         device_source = (INTEGRATION / "nweather_device.py").read_text(encoding="utf-8")
         self.assertIn('return self.area + ":" + self.device[0]', device_source)
-        self.assertIn("DOMAIN,\n                    self.area", device_source)
+        self.assertIn('"identifiers": {(DOMAIN, self.area)}', device_source)
+        self.assertNotIn('"connections"', device_source)
+
+    def test_entities_use_native_shared_device_info_without_identity_drift(self):
+        self.assertEqual(len(const_module.WEATHER_INFO), 31)
+        self.assertTrue(
+            {"publicTimeC", "publicTimeH", "publicTimeW"}.issubset(
+                const_module.WEATHER_INFO
+            )
+        )
+        api = api_module.NWeatherAPI(FakeHass(), FakeEntry("서울"), 1)
+        coordinator = types.SimpleNamespace(last_update_success=True)
+        entities = [
+            sensor_module.NWeatherSensor(
+                const_module.WEATHER_INFO["NowTemp"], api, coordinator
+            ),
+            sensor_module.NWeatherSensor(
+                const_module.WEATHER_INFO["Humidity"], api, coordinator
+            ),
+            weather_module.NWeatherMain(
+                ["Naver Weather Custom", "네이버날씨Custom", "", ""],
+                api,
+                coordinator,
+            ),
+        ]
+        expected_ids = {
+            "서울 날씨:NowTemp",
+            "서울 날씨:Humidity",
+            "서울 날씨:Naver Weather Custom",
+        }
+        self.assertEqual(set(api.unique), expected_ids)
+        for entity in entities:
+            self.assertEqual(entity.unique_id, entity._attr_unique_id)
+            self.assertEqual(
+                entity.device_info["identifiers"],
+                {(const_module.DOMAIN, "서울 날씨")},
+            )
+            self.assertIs(entity.device_info, entity._attr_device_info)
+            self.assertNotIn("connections", entity.device_info)
+            self.assertEqual(entity.device_info["manufacturer"], api.brand_name)
+            self.assertEqual(entity.device_info["model"], f"{api.model}_{api.version}")
+            self.assertEqual(entity.device_info["sw_version"], api.version)
+
+    def test_publication_lines_use_exact_notice_selector_and_kst_nearest_year(self):
+        notices = [FakeNode(
+            "현재 및 1시간예보\n"
+            "발표시간 : 12.31. 23:45\n"
+            "시간별예보\n"
+            "발표시간 : 01.01. 00:00\n"
+            "주간예보\n"
+            "발표시간 : 12.30. 18:00"
+        )]
+        soup = FakeSoup(
+            selections={api_module.PUBLICATION_TIME_SELECTOR: notices}
+        )
+        reference = datetime(2026, 1, 1, 0, 30, tzinfo=api_module.KST)
+        self.assertEqual(
+            api_module.parse_publication_times(soup, reference),
+            {
+                "publicTimeC": "2025-12-31T23:45:00+09:00",
+                "publicTimeH": "2026-01-01T00:00:00+09:00",
+                "publicTimeW": "2025-12-30T18:00:00+09:00",
+            },
+        )
+        malformed = FakeSoup(
+            selections={api_module.PUBLICATION_TIME_SELECTOR: [FakeNode(
+                "현재 및 1시간예보\n발표시간 : 02.31. 25:99\n"
+                "시간별예보\n발표시간 : 01.01 00:15\n"
+                "주간예보\n발표시간 : 01.01. 01:15"
+            )]}
+        )
+        self.assertEqual(
+            api_module.parse_publication_times(malformed, reference),
+            {
+                "publicTimeC": None,
+                "publicTimeH": "2026-01-01T00:15:00+09:00",
+                "publicTimeW": "2026-01-01T01:15:00+09:00",
+            },
+        )
+        self.assertIsNone(
+            api_module.resolve_public_timestamp_kst("주간예보: 02.31. 25:99", reference)
+        )
+        self.assertEqual(
+            api_module.parse_publication_times(FakeSoup(), reference),
+            {"publicTimeC": None, "publicTimeH": None, "publicTimeW": None},
+        )
+        self.assertEqual(
+            api_module.PUBLICATION_TIME_SELECTOR,
+            "div.api_subject_bx._weekly_weather_wrap div.notice_area._related_info._info_layer_wrap div.layer_pop._select_panel > p.desc",
+        )
+
+    def test_hourly_open_panel_alignment_wind_and_optional_arrays(self):
+        def hourly_row(label, temperature, condition):
+            icon = (
+                [FakeNode(classes=["wt_icon", f"ico_{condition}"])]
+                if condition
+                else []
+            )
+            return FakeNode(
+                selections={
+                    "dt.time": [FakeNode(label)],
+                    "span.num": [FakeNode(temperature)],
+                    "dd.weather_box > i": icon,
+                }
+            )
+
+        rows = [hourly_row("18시", "10", "wt1"), hourly_row("19시", "11", "wt9")]
+        reference = datetime(2026, 8, 27, 18, tzinfo=api_module.KST)
+        open_panel = FakeNode(
+            selections={
+                api_module.HOURLY_ROW_SELECTOR: rows,
+                api_module.HOURLY_RAIN_PERCENT_SELECTOR: [
+                    FakeNode("20%"),
+                    FakeNode("40%"),
+                ],
+                api_module.HOURLY_RAINFALL_SELECTOR: [
+                    FakeNode("1.5mm"),
+                    FakeNode("2.5mm"),
+                ],
+                api_module.HOURLY_HUMIDITY_SELECTOR: [
+                    FakeNode("60"),
+                    FakeNode("61"),
+                ],
+                api_module.HOURLY_WIND_DIRECTION_SELECTOR: [
+                    FakeNode("북서풍"),
+                    FakeNode("남동풍"),
+                ],
+                api_module.HOURLY_WIND_SPEED_SELECTOR: [
+                    FakeNode("3"),
+                    FakeNode("4"),
+                ],
+            }
+        )
+        soup = FakeSoup(selections={"div.open": [open_panel]})
+        selected = api_module._open_hourly_panel(soup)
+        self.assertIs(selected, open_panel)
+        # Arrays are read only from the selected open panel.
+        forecast = api_module.parse_hourly_forecast(open_panel, reference)
+        self.assertEqual(len(forecast), 2)
+        row = forecast[1]
+        self.assertEqual(row["datetime"].isoformat(), "2026-08-27T19:00:00+09:00")
+        self.assertEqual(row["native_temperature"], 11.0)
+        self.assertEqual(row["condition"], "rainy")
+        self.assertEqual(row["precipitation_probability"], 40)
+        self.assertEqual(row["native_precipitation"], 2.5)
+        self.assertEqual(row["humidity"], 61.0)
+        self.assertEqual(row["wind_bearing"], 135)
+        self.assertEqual(row["wind_speed"], 4.0)
+
+        sparse_panel = FakeNode(
+            selections={
+                api_module.HOURLY_ROW_SELECTOR: rows,
+                # Optional arrays may be shorter than the row list without
+                # dropping the remaining valid hourly rows.
+                api_module.HOURLY_RAIN_PERCENT_SELECTOR: [FakeNode("30%")],
+                api_module.HOURLY_RAINFALL_SELECTOR: [FakeNode("0.5mm")],
+            }
+        )
+        sparse = api_module.parse_hourly_forecast(sparse_panel, reference)
+        self.assertEqual(len(sparse), 2)
+        self.assertEqual(sparse[0]["precipitation_probability"], 30)
+        self.assertEqual(sparse[0]["native_precipitation"], 0.5)
+        self.assertIsNone(sparse[1]["precipitation_probability"])
+        self.assertIsNone(sparse[1]["native_precipitation"])
+        self.assertIsNone(sparse[1]["humidity"])
+        self.assertIsNone(sparse[1]["wind_speed"])
+        self.assertIsNone(
+            api_module.parse_hourly_forecast(
+                FakeNode(selections={api_module.HOURLY_ROW_SELECTOR: [hourly_row("20시", "12", None)]}),
+                reference,
+            )[0]["condition"]
+        )
+
+    def test_wind_direction_variants_and_native_forecast_fields(self):
+        for label, expected in (
+            ("북", 0),
+            ("북북동풍", 22.5),
+            ("동풍", 90),
+            ("남서풍", 225),
+            ("서북서", 292.5),
+            ("NW", 315),
+        ):
+            with self.subTest(label=label):
+                self.assertEqual(api_module.parse_wind_direction(label), expected)
+        self.assertEqual(api_module.parse_wind_text("북서풍 3.25m/s"), (315, 3.25))
+
+        api = api_module.NWeatherAPI(FakeHass(), FakeEntry(), 1)
+        api.result["WindSpeed"] = "2.5"
+        coordinator = types.SimpleNamespace(last_update_success=True)
+        entity = weather_module.NWeatherMain(
+            ["Naver Weather Custom", "네이버날씨Custom", "", ""], api, coordinator
+        )
+        self.assertEqual(entity.native_wind_speed, 2.5)
+        self.assertEqual(entity._attr_native_wind_speed_unit, "m/s")
+        self.assertEqual(entity._attr_native_precipitation_unit, "mm")
+        reference_time = datetime(2026, 8, 27, 19, tzinfo=api_module.KST)
+        api.forecast_hour = [
+            {
+                "datetime": reference_time,
+                "condition": "rainy",
+                "native_temperature": 21.0,
+                "precipitation_probability": 40,
+                "wind_bearing": 135,
+                "wind_speed": 4.0,
+                "native_precipitation": 1.0,
+                "humidity": 60.0,
+            }
+        ]
+        hourly = entity._forecast_hour(4)
+        self.assertEqual(hourly[0]["datetime"], "2026-08-27T10:00:00+00:00")
+        self.assertEqual(hourly[0]["native_temperature"], 21.0)
+        self.assertEqual(hourly[0]["native_precipitation"], 1.0)
+        self.assertEqual(hourly[0]["wind_bearing"], 135)
+        self.assertEqual(hourly[0]["native_wind_speed"], 4.0)
+        self.assertNotIn("temperature", hourly[0])
+        self.assertNotIn("wind_speed", hourly[0])
+
+        api.forecast = [
+            {
+                "datetime": reference_time,
+                "condition_am": "sunny",
+                "condition_pm": "rainy",
+                "templow": 12.0,
+                "temperature": 22.0,
+                "rain_rate_am": 20,
+                "rain_rate_pm": 40,
+                "weathertype_am": "wt1",
+                "weathertype_pm": "wt9",
+            }
+        ]
+        daily = entity._forecast(1)
+        self.assertEqual(daily[0]["datetime"], "2026-08-27T10:00:00+00:00")
+        self.assertEqual(daily[0]["native_temperature"], 22.0)
+        self.assertEqual(daily[0]["native_templow"], 12.0)
 
     def test_forecast_rollover_resolvers_and_today_presentation(self):
         fixture = json.loads(

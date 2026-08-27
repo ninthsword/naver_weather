@@ -14,7 +14,7 @@ v2.5.3-0.3
 네이버 날씨 웹페이지를 크롤링하여 센서로 추가해 줍니다.<br>
 아무래도 크롤링을 해서 가져오는 부분이라 센서에서 호출하는 부분은 최소화할 수 있도록 했습니다.<br>
 
-통합구성요소를 지원하며, 통합구성요소를 통해 추가시 기기 1개와 구성요소 25개가 추가됩니다.<br>
+통합구성요소를 지원하며, 통합구성요소를 통해 추가시 기기 1개와 구성요소 32개(센서 31개와 날씨 엔티티 1개)가 추가됩니다.<br>
 여러지역의 네이버 날씨를 지원합니다. 한군데 이상의 지역으로 등록 가능하지만 너무 많은 지역으로 등록은 삼가해주세요.<br>
 10분 간격으로 네이버 날씨정보를 갱신합니다. 10분이면 충분하니 간격을 더 줄이는건 참아주세요!<br>
 
@@ -100,11 +100,18 @@ All entities for one configured area share a 10-minute coordinator refresh. A fa
 refresh marks the entities unavailable rather than presenting stale weather data as
 current. The current/air requests remain one all-or-nothing refresh operation.
 
-Daily and hourly forecast timestamps are resolved from Naver's displayed labels in
-Korea Standard Time, including December/January rollover. The existing `today`
-option affects daily and twice-daily forecast presentation only: enabled includes
-the current KST day, while its default omits only that day. Hourly forecast data is
-unchanged.
+Daily, hourly, and forecast-publication timestamps are resolved from Naver's
+displayed labels in Korea Standard Time, including December/January rollover.
+The existing `today` option affects daily and twice-daily forecast presentation
+only: enabled includes the current KST day, while its default omits only that day.
+Hourly rows retain Naver's displayed timestamp `T`. The condition and precipitation
+values on that row describe the preceding interval `(T-1h,T]`, while temperature,
+wind, and humidity remain aligned to the exact `T` row. Short or missing optional
+arrays do not discard otherwise valid rows. Wind speed is retained in native m/s,
+and the current, hourly, and weekly publication times are exposed as ISO-8601 KST
+values (`publicTimeC`, `publicTimeH`, and `publicTimeW`). Forecast payloads use
+Home Assistant's native temperature, wind-speed, and precipitation fields; the
+HA forecast boundary emits UTC RFC-3339 datetime strings.
 
 <br>
 
@@ -154,6 +161,9 @@ area는 기본값으로 '날씨'로 들어갑니다.<br>
 |오늘내일비시작시간 | |
 |현재날씨       | |
 |현재날씨정보    | |
+|현재 및 1시간예보 발표시간 | ISO-8601 KST |
+|시간별예보 발표시간 | ISO-8601 KST |
+|주간예보 발표시간 | ISO-8601 KST |
 |내일오전날씨     | |
 |내일오후날씨     | |
 
