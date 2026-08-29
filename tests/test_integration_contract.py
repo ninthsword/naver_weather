@@ -7,8 +7,9 @@ import sys
 import types
 import unittest
 from datetime import datetime
+from itertools import pairwise
 from pathlib import Path
-
+from unittest.mock import AsyncMock
 
 REPOSITORY = Path(__file__).resolve().parents[1]
 INTEGRATION = REPOSITORY / "custom_components" / "naver_weather_custom"
@@ -24,7 +25,11 @@ def _module(name: str) -> types.ModuleType:
 def install_home_assistant_shims() -> None:
     """Install the small Home Assistant surface needed by these unit tests."""
     bs4 = _module("bs4")
+    bs4.__path__ = []
     bs4.BeautifulSoup = object
+    bs4_element = _module("bs4.element")
+    bs4_element.Tag = type("Tag", (), {})
+    bs4.element = bs4_element
 
     class OptionalKey(str):
         def __new__(cls, value, default=None):
@@ -114,7 +119,7 @@ def install_home_assistant_shims() -> None:
         async def async_request_refresh(self):
             try:
                 self.data = await self._async_update_data()
-            except Exception:
+            except (AttributeError, KeyError, RuntimeError, TypeError, ValueError):
                 self.last_update_success = False
                 return
             self.last_update_success = True
@@ -220,6 +225,7 @@ device_module = importlib.import_module(
 const_module = importlib.import_module("custom_components.naver_weather_custom.const")
 weather_module = importlib.import_module("custom_components.naver_weather_custom.weather")
 sensor_module = importlib.import_module("custom_components.naver_weather_custom.sensor")
+integration_module = importlib.import_module("custom_components.naver_weather_custom")
 
 
 _MISSING = object()
@@ -270,7 +276,6 @@ class FakeNode:
 class FakeSoup(FakeNode):
     """Root selector node used to keep tests dependency-free."""
 
-    pass
 
 
 class IntegrationContractTest(unittest.TestCase):
@@ -314,6 +319,66 @@ class IntegrationContractTest(unittest.TestCase):
         self.assertEqual(coordinator.data, {"NowTemp": "22"})
         asyncio.run(coordinator.async_request_refresh())
         self.assertFalse(coordinator.last_update_success)
+
+    def test_unload_platforms_success_cleans_up_and_false_preserves_state(self):
+        entry = types.SimpleNamespace(entry_id="entry")
+
+        for unload_result, should_clean in ((True, True), (False, False)):
+            with self.subTest(unload_result=unload_result):
+                manager = types.SimpleNamespace(
+                    async_unload_platforms=AsyncMock(return_value=unload_result)
+                )
+                hass = types.SimpleNamespace(
+                    config_entries=manager,
+                    data={
+                        const_module.DOMAIN: {
+                            "api": {entry.entry_id: object()},
+                            "coordinators": {entry.entry_id: object()},
+                        }
+                    },
+                )
+
+                result = asyncio.run(integration_module.async_unload_entry(hass, entry))
+
+                self.assertEqual(should_clean, result)
+                manager.async_unload_platforms.assert_awaited_once_with(
+                    entry, const_module.PLATFORMS
+                )
+                for collection in hass.data[const_module.DOMAIN].values():
+                    self.assertEqual(0 if should_clean else 1, len(collection))
+
+    def test_unload_platforms_exception_propagates_without_cleanup(self):
+        entry = types.SimpleNamespace(entry_id="entry")
+        error = RuntimeError("platform unload failed")
+        manager = types.SimpleNamespace(
+            async_unload_platforms=AsyncMock(side_effect=error)
+        )
+        hass = types.SimpleNamespace(
+            config_entries=manager,
+            data={
+                const_module.DOMAIN: {
+                    "api": {entry.entry_id: object()},
+                    "coordinators": {entry.entry_id: object()},
+                }
+            },
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "platform unload failed"):
+            asyncio.run(integration_module.async_unload_entry(hass, entry))
+        self.assertIn(entry.entry_id, hass.data[const_module.DOMAIN]["api"])
+        self.assertIn(entry.entry_id, hass.data[const_module.DOMAIN]["coordinators"])
+
+    def test_weather_cast_optional_blind_label_is_safe(self):
+        cases = (
+            ("오늘 예보 blind 뒤", "blind", "뒤, 오늘 예보 blind"),
+            ("원문", None, "원문"),
+            ("원문", "", "원문"),
+            ("원문", "blind", "원문"),
+            ("", "blind", ""),
+        )
+        for text, blind, expected in cases:
+            with self.subTest(text=text, blind=blind):
+                self.assertEqual(expected, api_module.format_weather_cast(text, blind))
 
     def test_concrete_device_initializes_api_and_coordinator_bases(self):
         class ConcreteDevice(device_module.NWeatherDevice):
@@ -380,7 +445,7 @@ class IntegrationContractTest(unittest.TestCase):
         self.assertEqual(legacy_entry.unique_id, "legacy raw area")
 
         new_flow = config_flow_module.ConfigFlow()
-        new_flow._async_current_entries = lambda: []
+        new_flow._async_current_entries = list
         created = asyncio.run(new_flow.async_step_user({"area": " Seoul  Station "}))
         self.assertEqual(created["type"], "create_entry")
         self.assertEqual(new_flow.unique_id, "seoul station")
@@ -679,7 +744,7 @@ class IntegrationContractTest(unittest.TestCase):
             [timestamp.isoformat() for timestamp in hourly], fixture["expected_hourly"]
         )
         self.assertTrue(all(timestamp.tzinfo is not None for timestamp in hourly))
-        self.assertTrue(all(left < right for left, right in zip(hourly, hourly[1:])))
+        self.assertTrue(all(left < right for left, right in pairwise(hourly)))
 
         rows = [{"datetime": timestamp, "value": index} for index, timestamp in enumerate(daily)]
         self.assertEqual(

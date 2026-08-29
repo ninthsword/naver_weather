@@ -1,10 +1,8 @@
 """Support for Naver Weather Sensors."""
 import logging
 
-from .nweather_device import NWeatherDevice
-
 from .const import DOMAIN, WEATHER_INFO
-
+from .nweather_device import NWeatherDevice
 
 _LOGGER = logging.getLogger(__name__)
 

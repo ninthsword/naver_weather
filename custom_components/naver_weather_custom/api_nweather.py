@@ -1,22 +1,23 @@
 """API for naver weather component."""
 
-from datetime import datetime, timedelta, timezone
 import logging
 import re
-
-from bs4 import BeautifulSoup
+from datetime import datetime, timedelta, timezone
 
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
+from .bs4_compat import BeautifulSoup
 from .const import (
     BRAND,
     BSE_URL,
-    SW_VERSION,
+    CAI_GRADE,
+    CO_GRADE,
     CONDITION,
     CONDITIONS,
     CONF_AREA,
     CONF_TODAY,
     DEVICE_REG,
+    DEVICE_UNREG,
     DEVICE_UPDATE,
     FEEL_TEMP,
     LOCATION,
@@ -25,19 +26,21 @@ from .const import (
     MODEL,
     NDUST,
     NDUST_GRADE,
+    NO2_GRADE,
     NOW_CAST,
-    NOW_WEATHER,
     NOW_HUMI,
     NOW_TEMP,
+    NOW_WEATHER,
     OZON_GRADE,
-    CO_GRADE,
-    SO2_GRADE,
-    NO2_GRADE,
-    CAI_GRADE,
     PUBLIC_TIME_C,
     PUBLIC_TIME_H,
     PUBLIC_TIME_W,
+    RAIN_PERCENT,
     RAINFALL,
+    RAINY_START,
+    RAINY_START_TMR,
+    SO2_GRADE,
+    SW_VERSION,
     TOMORROW_AM,
     TOMORROW_MAX,
     TOMORROW_MIN,
@@ -47,10 +50,6 @@ from .const import (
     UV_GRADE,
     WIND_DIR,
     WIND_SPEED,
-    RAINY_START,
-    RAINY_START_TMR,
-    RAIN_PERCENT,
-    DEVICE_UNREG,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -194,8 +193,21 @@ def _node_text(node: object) -> str:
         if callable(get_text):
             return str(get_text("\n", strip=True) or "").strip()
         return str(getattr(node, "text", "") or "").strip()
-    except Exception:
+    except (AttributeError, TypeError, ValueError):
         return ""
+
+
+def format_weather_cast(text: str | None, blind: str | None) -> str | None:
+    """Format a weather-cast label without making optional markup fatal."""
+    if text is None:
+        return None
+    original = text.strip() if isinstance(text, str) else str(text).strip()
+    if not isinstance(blind, str) or not blind:
+        return original
+    parts = original.split(blind, 1)
+    if len(parts) != 2:
+        return original
+    return f"{parts[1].strip()}, {parts[0]}{blind}"
 
 
 def parse_publication_times(
@@ -205,7 +217,7 @@ def parse_publication_times(
     publication_times = {key: None for _, key in PUBLICATION_TIME_LABELS}
     try:
         notices = soup.select(PUBLICATION_TIME_SELECTOR)
-    except Exception:
+    except (AttributeError, TypeError, ValueError):
         return publication_times
     for notice in notices or []:
         text = " ".join(_node_text(notice).split())
@@ -275,7 +287,7 @@ def parse_wind_text(value: str | None) -> tuple[float | None, float | None]:
     text = value if isinstance(value, str) else ""
     bearing = parse_wind_direction(text)
     speed_match = re.search(
-        r"(-?\d+(?:\.\d+)?)\s*(?:m\s*/\s*s|미터/?초)", text, re.I
+        r"(-?\d+(?:\.\d+)?)\s*(?:m\s*/\s*s|미터/?초)", text, re.IGNORECASE
     )
     if speed_match is None:
         speed_text = re2float(text)
@@ -291,17 +303,17 @@ def parse_wind_text(value: str | None) -> tuple[float | None, float | None]:
 def _select_nodes(container: object, selector: str) -> list[object]:
     try:
         return list(container.select(selector) or [])
-    except Exception:
+    except (AttributeError, TypeError, ValueError):
         return []
 
 
 def _node_classes(node: object) -> list[str]:
     try:
         classes = node.get("class", [])
-    except Exception:
+    except (AttributeError, KeyError, TypeError):
         try:
             classes = node["class"]
-        except Exception:
+        except (AttributeError, KeyError, TypeError):
             classes = []
     if isinstance(classes, str):
         return classes.split()
@@ -439,7 +451,7 @@ def _open_hourly_panel(soup: object) -> object | None:
     """Return the open weather panel that owns all hourly arrays."""
     try:
         panels = soup.select("div.open")
-    except Exception:
+    except (AttributeError, TypeError, ValueError):
         return None
     for panel in panels or []:
         if _select_nodes(panel, HOURLY_ROW_SELECTOR):
@@ -632,7 +644,7 @@ class NWeatherAPI:
                 val = None
 
             return val;
-        except Exception as e:
+        except (AttributeError, KeyError, TypeError, ValueError) as e:
             _LOGGER.error( f"[{BRAND}] _bs4_select_one Error {tag} : {e}" )
 
     
@@ -688,13 +700,7 @@ class NWeatherAPI:
                 cWeather = self._bs4_select_one(wCast, "span.weather")
                 blind    = self._bs4_select_one(wCast, "span.blind")
 
-                WeatherCast = wCast.text.strip()
-
-                arrCastTmp = WeatherCast.split(blind)
-
-                convCast = "{}, {}{}".format(arrCastTmp[1].strip(), arrCastTmp[0], blind)
-
-                WeatherCast = convCast
+                WeatherCast = format_weather_cast(wCast.text, blind)
 
                 #현재날씨
                 NowWeather = cWeather
@@ -739,7 +745,7 @@ class NWeatherAPI:
 
                 nCnt += 1
 
-            rainPercent = str(( round(rainSum/11, 1) if rainSum > 0 else 0 ))
+            rainPercent = str( round(rainSum/11, 1) if rainSum > 0 else 0 )
             
             # 미세먼지/초미세먼지/자외선(등급)/일몰일출
             reportCardWrap = soup.select("div.report_card_wrap > ul.today_chart_list > li.item_today")
@@ -759,10 +765,6 @@ class NWeatherAPI:
                 if "자외선" in gb:
                     TodayUVGrade = gbVal
 
-                if ( "일몰" in gb or "일출" in gb ):
-                    sunflux = gbVal
-                    #eLog(gb + " / " + sunflux)
-
             # condition
             condition_raw = soup.select(
                 "div.weather_info > div > div > div.weather_graphic > "
@@ -774,7 +776,7 @@ class NWeatherAPI:
                 weathertype = None
                 condition = None
                 
-            contdition_blind_text = self._bs4_select_one(soup, "div.weather_info > div > div > div.weather_graphic > div.weather_main > i > span.blind")
+            self._bs4_select_one(soup, "div.weather_info > div > div > div.weather_graphic > div.weather_main > i > span.blind")
             #eLog(contdition_blind_text)
             
             # 비시작시간
@@ -895,7 +897,7 @@ class NWeatherAPI:
                         # 내일 오후상태
                         tomorrowAState = cell_w[1].text
 
-                except Exception as ex:
+                except (AttributeError, IndexError, KeyError, TypeError, ValueError) as ex:
                     eLog(ex)
 
 
@@ -911,11 +913,11 @@ class NWeatherAPI:
             pollution = bs4air.find("div", {"class": "other_air_info"})
 
             # 초기화
-            Ozon = OzonGrade = None
-            co   = coGrade   = None
-            so2  = so2Grade  = None
-            no2  = no2Grade  = None
-            cai  = caiGrade  = None
+            OzonGrade = None
+            coGrade = None
+            so2Grade = None
+            no2Grade = None
+            caiGrade = None
 
             if pollution is not None:
                 survey = pollution.select("ul.air_info_list > li")

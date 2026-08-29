@@ -7,7 +7,6 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from .api_nweather import NWeatherAPI
 from .const import BRAND
 
-
 UPDATE_INTERVAL = timedelta(minutes=10)
 
 
