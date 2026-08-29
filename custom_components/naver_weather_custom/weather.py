@@ -1,26 +1,8 @@
 """Support for Naver Weather Sensors."""
-from datetime import datetime, timedelta, timezone
 import logging
-
-from homeassistant.components.weather import WeatherEntity
-from homeassistant.const import (
-    UnitOfPrecipitationDepth,
-    UnitOfSpeed,
-    UnitOfTemperature,
-)
+from datetime import datetime, timedelta, timezone
 
 from homeassistant.components.weather import (
-    ATTR_CONDITION_CLEAR_NIGHT,
-    ATTR_CONDITION_CLOUDY,
-    ATTR_CONDITION_FOG,
-    ATTR_CONDITION_HAIL,
-    ATTR_CONDITION_LIGHTNING,
-    ATTR_CONDITION_PARTLYCLOUDY,
-    ATTR_CONDITION_POURING,
-    ATTR_CONDITION_RAINY,
-    ATTR_CONDITION_SNOWY,
-    ATTR_CONDITION_SUNNY,
-
     ATTR_FORECAST_CONDITION,
     ATTR_FORECAST_NATIVE_PRECIPITATION,
     ATTR_FORECAST_NATIVE_TEMP,
@@ -29,12 +11,17 @@ from homeassistant.components.weather import (
     ATTR_FORECAST_PRECIPITATION_PROBABILITY,
     ATTR_FORECAST_TIME,
     ATTR_FORECAST_WIND_BEARING,
-
-    DOMAIN as SENSOR_DOMAIN,
     Forecast,
+    WeatherEntity,
     WeatherEntityFeature,
 )
+from homeassistant.const import (
+    UnitOfPrecipitationDepth,
+    UnitOfSpeed,
+    UnitOfTemperature,
+)
 
+from .api_nweather import KST, filter_daily_forecast_rows
 from .const import (
     CONDITION,
     DOMAIN,
@@ -44,7 +31,6 @@ from .const import (
     WIND_DIR,
     WIND_SPEED,
 )
-from .api_nweather import KST, filter_daily_forecast_rows
 from .nweather_device import NWeatherDevice
 
 _LOGGER = logging.getLogger(__name__)
@@ -110,7 +96,7 @@ class NWeatherMain(NWeatherDevice, WeatherEntity):
         """Return the temperature."""
         try:
             return float(self.api.result.get(NOW_TEMP[0]))
-        except Exception:
+        except (AttributeError, KeyError, TypeError, ValueError):
             return
 
     @property
@@ -118,7 +104,7 @@ class NWeatherMain(NWeatherDevice, WeatherEntity):
         """Return the humidity."""
         try:
             return int(self.api.result.get(NOW_HUMI[0]))
-        except Exception:
+        except (AttributeError, KeyError, TypeError, ValueError):
             return
 
     @property
@@ -126,7 +112,7 @@ class NWeatherMain(NWeatherDevice, WeatherEntity):
         """Return the wind speed."""
         try:
             return float(self.api.result.get(WIND_SPEED[0]))
-        except Exception:
+        except (AttributeError, KeyError, TypeError, ValueError):
             return
 
     @property

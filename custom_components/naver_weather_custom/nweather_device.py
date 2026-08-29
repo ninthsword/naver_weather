@@ -4,7 +4,7 @@ import logging
 
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DEVICE_REG, DEVICE_UNREG, DOMAIN, BSE_URL
+from .const import BSE_URL, DEVICE_REG, DEVICE_UNREG, DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 

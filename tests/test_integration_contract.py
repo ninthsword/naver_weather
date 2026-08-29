@@ -7,9 +7,9 @@ import sys
 import types
 import unittest
 from datetime import datetime
+from itertools import pairwise
 from pathlib import Path
 from unittest.mock import AsyncMock
-
 
 REPOSITORY = Path(__file__).resolve().parents[1]
 INTEGRATION = REPOSITORY / "custom_components" / "naver_weather_custom"
@@ -115,7 +115,7 @@ def install_home_assistant_shims() -> None:
         async def async_request_refresh(self):
             try:
                 self.data = await self._async_update_data()
-            except Exception:
+            except (AttributeError, KeyError, RuntimeError, TypeError, ValueError):
                 self.last_update_success = False
                 return
             self.last_update_success = True
@@ -272,7 +272,6 @@ class FakeNode:
 class FakeSoup(FakeNode):
     """Root selector node used to keep tests dependency-free."""
 
-    pass
 
 
 class IntegrationContractTest(unittest.TestCase):
@@ -442,7 +441,7 @@ class IntegrationContractTest(unittest.TestCase):
         self.assertEqual(legacy_entry.unique_id, "legacy raw area")
 
         new_flow = config_flow_module.ConfigFlow()
-        new_flow._async_current_entries = lambda: []
+        new_flow._async_current_entries = list
         created = asyncio.run(new_flow.async_step_user({"area": " Seoul  Station "}))
         self.assertEqual(created["type"], "create_entry")
         self.assertEqual(new_flow.unique_id, "seoul station")
@@ -741,7 +740,7 @@ class IntegrationContractTest(unittest.TestCase):
             [timestamp.isoformat() for timestamp in hourly], fixture["expected_hourly"]
         )
         self.assertTrue(all(timestamp.tzinfo is not None for timestamp in hourly))
-        self.assertTrue(all(left < right for left, right in zip(hourly, hourly[1:])))
+        self.assertTrue(all(left < right for left, right in pairwise(hourly)))
 
         rows = [{"datetime": timestamp, "value": index} for index, timestamp in enumerate(daily)]
         self.assertEqual(

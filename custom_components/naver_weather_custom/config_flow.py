@@ -1,8 +1,6 @@
 """Config flow for naver_weather."""
-import voluptuous as vol
 import homeassistant.helpers.config_validation as cv
-
-
+import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.core import callback
 
