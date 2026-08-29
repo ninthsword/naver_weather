@@ -25,7 +25,11 @@ def _module(name: str) -> types.ModuleType:
 def install_home_assistant_shims() -> None:
     """Install the small Home Assistant surface needed by these unit tests."""
     bs4 = _module("bs4")
+    bs4.__path__ = []
     bs4.BeautifulSoup = object
+    bs4_element = _module("bs4.element")
+    bs4_element.Tag = type("Tag", (), {})
+    bs4.element = bs4_element
 
     class OptionalKey(str):
         def __new__(cls, value, default=None):

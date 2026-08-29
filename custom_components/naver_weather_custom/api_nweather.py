@@ -4,9 +4,9 @@ import logging
 import re
 from datetime import datetime, timedelta, timezone
 
-from bs4 import BeautifulSoup
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
+from .bs4_compat import BeautifulSoup
 from .const import (
     BRAND,
     BSE_URL,
