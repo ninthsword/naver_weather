@@ -5,6 +5,7 @@ import subprocess
 import sys
 import unittest
 from pathlib import Path
+from textwrap import dedent
 
 REPOSITORY = Path(__file__).resolve().parents[1]
 MANIFEST = REPOSITORY / "custom_components" / "naver_weather_custom" / "manifest.json"
@@ -22,7 +23,7 @@ class DependencyCompatibilityTest(unittest.TestCase):
 
     def _run_real_package(self, script):
         result = subprocess.run(
-            [sys.executable, "-I", "-c", script],
+            [sys.executable, "-I", "-B", "-c", dedent(script)],
             capture_output=True,
             text=True,
             check=False,
