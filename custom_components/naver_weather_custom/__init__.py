@@ -1,5 +1,4 @@
 """Naver Weather Sensor for Homeassistant."""
-import asyncio
 import logging
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
@@ -31,20 +30,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry):
-    """Unload a config entry."""
-    try:
-        unload_ok = all(
-            await asyncio.gather(
-                *[
-                    hass.config_entries.async_forward_entry_unload(entry, component)
-                    for component in PLATFORMS
-                ]
-            )
-        )
-        if unload_ok:
-            hass.data[DOMAIN]["api"].pop(entry.entry_id)
-            hass.data[DOMAIN]["coordinators"].pop(entry.entry_id)
+    """Unload a config entry and clean up only after platforms unload."""
+    unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    if not unload_ok:
+        return False
 
-        return unload_ok
-    except Exception:
-        return True
+    domain_data = hass.data.get(DOMAIN)
+    if isinstance(domain_data, dict):
+        for collection_name in ("api", "coordinators"):
+            collection = domain_data.get(collection_name)
+            if isinstance(collection, dict):
+                collection.pop(entry.entry_id, None)
+    return True

@@ -8,6 +8,7 @@ import types
 import unittest
 from datetime import datetime
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 
 REPOSITORY = Path(__file__).resolve().parents[1]
@@ -220,6 +221,7 @@ device_module = importlib.import_module(
 const_module = importlib.import_module("custom_components.naver_weather_custom.const")
 weather_module = importlib.import_module("custom_components.naver_weather_custom.weather")
 sensor_module = importlib.import_module("custom_components.naver_weather_custom.sensor")
+integration_module = importlib.import_module("custom_components.naver_weather_custom")
 
 
 _MISSING = object()
@@ -314,6 +316,66 @@ class IntegrationContractTest(unittest.TestCase):
         self.assertEqual(coordinator.data, {"NowTemp": "22"})
         asyncio.run(coordinator.async_request_refresh())
         self.assertFalse(coordinator.last_update_success)
+
+    def test_unload_platforms_success_cleans_up_and_false_preserves_state(self):
+        entry = types.SimpleNamespace(entry_id="entry")
+
+        for unload_result, should_clean in ((True, True), (False, False)):
+            with self.subTest(unload_result=unload_result):
+                manager = types.SimpleNamespace(
+                    async_unload_platforms=AsyncMock(return_value=unload_result)
+                )
+                hass = types.SimpleNamespace(
+                    config_entries=manager,
+                    data={
+                        const_module.DOMAIN: {
+                            "api": {entry.entry_id: object()},
+                            "coordinators": {entry.entry_id: object()},
+                        }
+                    },
+                )
+
+                result = asyncio.run(integration_module.async_unload_entry(hass, entry))
+
+                self.assertEqual(should_clean, result)
+                manager.async_unload_platforms.assert_awaited_once_with(
+                    entry, const_module.PLATFORMS
+                )
+                for collection in hass.data[const_module.DOMAIN].values():
+                    self.assertEqual(0 if should_clean else 1, len(collection))
+
+    def test_unload_platforms_exception_propagates_without_cleanup(self):
+        entry = types.SimpleNamespace(entry_id="entry")
+        error = RuntimeError("platform unload failed")
+        manager = types.SimpleNamespace(
+            async_unload_platforms=AsyncMock(side_effect=error)
+        )
+        hass = types.SimpleNamespace(
+            config_entries=manager,
+            data={
+                const_module.DOMAIN: {
+                    "api": {entry.entry_id: object()},
+                    "coordinators": {entry.entry_id: object()},
+                }
+            },
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "platform unload failed"):
+            asyncio.run(integration_module.async_unload_entry(hass, entry))
+        self.assertIn(entry.entry_id, hass.data[const_module.DOMAIN]["api"])
+        self.assertIn(entry.entry_id, hass.data[const_module.DOMAIN]["coordinators"])
+
+    def test_weather_cast_optional_blind_label_is_safe(self):
+        cases = (
+            ("오늘 예보 blind 뒤", "blind", "뒤, 오늘 예보 blind"),
+            ("원문", None, "원문"),
+            ("원문", "", "원문"),
+            ("원문", "blind", "원문"),
+            ("", "blind", ""),
+        )
+        for text, blind, expected in cases:
+            with self.subTest(text=text, blind=blind):
+                self.assertEqual(expected, api_module.format_weather_cast(text, blind))
 
     def test_concrete_device_initializes_api_and_coordinator_bases(self):
         class ConcreteDevice(device_module.NWeatherDevice):

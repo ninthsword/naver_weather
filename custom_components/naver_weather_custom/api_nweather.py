@@ -198,6 +198,19 @@ def _node_text(node: object) -> str:
         return ""
 
 
+def format_weather_cast(text: str | None, blind: str | None) -> str | None:
+    """Format a weather-cast label without making optional markup fatal."""
+    if text is None:
+        return None
+    original = text.strip() if isinstance(text, str) else str(text).strip()
+    if not isinstance(blind, str) or not blind:
+        return original
+    parts = original.split(blind, 1)
+    if len(parts) != 2:
+        return original
+    return f"{parts[1].strip()}, {parts[0]}{blind}"
+
+
 def parse_publication_times(
     soup: object, reference: datetime
 ) -> dict[str, str | None]:
@@ -688,13 +701,7 @@ class NWeatherAPI:
                 cWeather = self._bs4_select_one(wCast, "span.weather")
                 blind    = self._bs4_select_one(wCast, "span.blind")
 
-                WeatherCast = wCast.text.strip()
-
-                arrCastTmp = WeatherCast.split(blind)
-
-                convCast = "{}, {}{}".format(arrCastTmp[1].strip(), arrCastTmp[0], blind)
-
-                WeatherCast = convCast
+                WeatherCast = format_weather_cast(wCast.text, blind)
 
                 #현재날씨
                 NowWeather = cWeather
