@@ -487,6 +487,31 @@ def re2num(val):
     else:
         return None
 
+
+def retain_previous_humidity(
+    current: object, previous: object
+) -> str | int | float | None:
+    """Keep the last valid humidity when Naver omits the current summary value.
+
+    The API result has no timestamp for the current humidity observation, so this is a
+    deliberately small last-known-value fallback, not a freshly measured reading. Startup
+    remains unknown until a valid value is observed; the next valid current value replaces it.
+    """
+    for value in (current, previous):
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, (int, float)):
+            if 0 <= value <= 100:
+                return value
+            continue
+        if (
+            isinstance(value, str)
+            and re.fullmatch(r"\d{1,3}", value.strip())
+            and int(value) <= 100
+        ):
+            return value
+    return None
+
 def re2float(val):
     if val is None:
         return None
@@ -719,7 +744,9 @@ class NWeatherAPI:
             TodayFeelTemp = re2float(re2key("체감", summ))
 
             # 습도
-            Humidity      = re2num(re2key("습도", summ))
+            Humidity      = retain_previous_humidity(
+                re2num(re2key("습도", summ)), self.result.get(NOW_HUMI[0])
+            )
 
             # 현재풍속/풍향
             wind      = re2keyW(summ)

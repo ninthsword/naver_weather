@@ -1,5 +1,6 @@
 """Dependency-free regression checks for the custom-domain integration contract."""
 
+import ast
 import asyncio
 import importlib
 import json
@@ -295,6 +296,62 @@ class IntegrationContractTest(unittest.TestCase):
         self.assertEqual(api.forecast, [])
         self.assertEqual(api.forecast_hour, [])
         self.assertEqual(api.weathertype, "")
+
+    def test_current_humidity_retains_only_last_valid_value(self):
+        self.assertIsNone(api_module.retain_previous_humidity(None, None))
+        self.assertEqual(api_module.retain_previous_humidity(None, "61"), "61")
+        self.assertEqual(api_module.retain_previous_humidity("malformed", "61"), "61")
+        self.assertEqual(api_module.retain_previous_humidity("-1", "61"), "61")
+        self.assertEqual(api_module.retain_previous_humidity("101", "61"), "61")
+        self.assertEqual(api_module.retain_previous_humidity("62", "61"), "62")
+        self.assertEqual(api_module.retain_previous_humidity("0", "61"), "0")
+        self.assertEqual(api_module.retain_previous_humidity("100", "61"), "100")
+        self.assertEqual(api_module.retain_previous_humidity(None, "101"), None)
+        tree = ast.parse(
+            (INTEGRATION / "api_nweather.py").read_text(encoding="utf-8")
+        )
+        assignments = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Assign)
+            and any(
+                isinstance(target, ast.Name) and target.id == "Humidity"
+                for target in node.targets
+            )
+        ]
+        self.assertEqual(len(assignments), 1)
+        call = assignments[0].value
+        self.assertIsInstance(call, ast.Call)
+        self.assertIsInstance(call.func, ast.Name)
+        self.assertEqual(call.func.id, "retain_previous_humidity")
+        self.assertEqual(len(call.args), 2)
+        current = call.args[0]
+        self.assertIsInstance(current, ast.Call)
+        self.assertIsInstance(current.func, ast.Name)
+        self.assertEqual(current.func.id, "re2num")
+        self.assertEqual(len(current.args), 1)
+        current_key = current.args[0]
+        self.assertIsInstance(current_key, ast.Call)
+        self.assertIsInstance(current_key.func, ast.Name)
+        self.assertEqual(current_key.func.id, "re2key")
+        self.assertEqual(len(current_key.args), 2)
+        self.assertIsInstance(current_key.args[0], ast.Constant)
+        self.assertEqual(current_key.args[0].value, "습도")
+        self.assertIsInstance(current_key.args[1], ast.Name)
+        self.assertEqual(current_key.args[1].id, "summ")
+        previous = call.args[1]
+        self.assertIsInstance(previous, ast.Call)
+        self.assertIsInstance(previous.func, ast.Attribute)
+        self.assertEqual(previous.func.attr, "get")
+        self.assertIsInstance(previous.func.value, ast.Attribute)
+        self.assertEqual(previous.func.value.attr, "result")
+        self.assertIsInstance(previous.func.value.value, ast.Name)
+        self.assertEqual(previous.func.value.value.id, "self")
+        self.assertIsInstance(previous.args[0], ast.Subscript)
+        self.assertIsInstance(previous.args[0].value, ast.Name)
+        self.assertEqual(previous.args[0].value.id, "NOW_HUMI")
+        self.assertIsInstance(previous.args[0].slice, ast.Constant)
+        self.assertEqual(previous.args[0].slice.value, 0)
 
     def test_single_ten_minute_coordinator_reports_later_failure(self):
         entry = FakeEntry()
