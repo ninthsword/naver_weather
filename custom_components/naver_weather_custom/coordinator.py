@@ -2,6 +2,8 @@
 
 from datetime import timedelta
 
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
 from .api_nweather import NWeatherAPI
@@ -10,10 +12,10 @@ from .const import BRAND
 UPDATE_INTERVAL = timedelta(minutes=10)
 
 
-class NWeatherDataUpdateCoordinator(DataUpdateCoordinator):
+class NWeatherDataUpdateCoordinator(DataUpdateCoordinator[dict[str, object]]):
     """Fetch one Naver Weather payload for all entities in a config entry."""
 
-    def __init__(self, hass, api: NWeatherAPI, entry) -> None:
+    def __init__(self, hass: HomeAssistant, api: NWeatherAPI, entry: ConfigEntry) -> None:
         """Initialize the shared refresh coordinator."""
         super().__init__(
             hass,
@@ -24,7 +26,7 @@ class NWeatherDataUpdateCoordinator(DataUpdateCoordinator):
         )
         self.api = api
 
-    async def _async_update_data(self):
+    async def _async_update_data(self) -> dict[str, object]:
         """Refresh the API payload and expose it to all subscribed entities."""
         await self.api.update()
         return self.api.result

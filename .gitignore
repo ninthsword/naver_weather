@@ -1,3 +1,9 @@
 /CLAUDE.md
 /AGENTS.md
 /.claude/
+
+# Generated development environments and tool caches
+/.venv/
+/devtools/pyright/node_modules/
+**/__pycache__/
+/.ruff_cache/

@@ -2,8 +2,12 @@
 
 import logging
 import re
+from collections.abc import Iterable, Sequence
 from datetime import datetime, timedelta, timezone
+from typing import Literal, Protocol, overload
 
+from aiohttp import ClientTimeout
+from bs4.element import Tag
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .bs4_compat import BeautifulSoup
@@ -51,6 +55,15 @@ from .const import (
     WIND_DIR,
     WIND_SPEED,
 )
+
+
+class HtmlNode(Protocol):
+    """The selector and text surface shared by Beautiful Soup and parser fixtures."""
+
+    def select(self, selector: str, /) -> Sequence["HtmlNode"]: ...
+
+    def select_one(self, selector: str, /) -> "HtmlNode | None": ...
+
 
 _LOGGER = logging.getLogger(__name__)
 KST = timezone(timedelta(hours=9))
@@ -197,6 +210,14 @@ def _node_text(node: object) -> str:
         return ""
 
 
+def _raw_node_text(node: object) -> str:
+    """Read the original text property for callers that reject malformed nodes."""
+    text = getattr(node, "text", None)
+    if not isinstance(text, str):
+        raise TypeError("Node text is missing or invalid")
+    return text
+
+
 def format_weather_cast(text: str | None, blind: str | None) -> str | None:
     """Format a weather-cast label without making optional markup fatal."""
     if text is None:
@@ -211,10 +232,10 @@ def format_weather_cast(text: str | None, blind: str | None) -> str | None:
 
 
 def parse_publication_times(
-    soup: object, reference: datetime
+    soup: HtmlNode, reference: datetime
 ) -> dict[str, str | None]:
     """Parse the three weather-panel publication lines into ISO-8601 KST."""
-    publication_times = {key: None for _, key in PUBLICATION_TIME_LABELS}
+    publication_times: dict[str, str | None] = {key: None for _, key in PUBLICATION_TIME_LABELS}
     try:
         notices = soup.select(PUBLICATION_TIME_SELECTOR)
     except (AttributeError, TypeError, ValueError):
@@ -224,7 +245,7 @@ def parse_publication_times(
         for match in PUBLICATION_LABEL_PATTERN.finditer(text):
             key = dict(PUBLICATION_TIME_LABELS).get(match.group("label"))
             timestamp = resolve_public_timestamp_kst(match.group("body"), reference)
-            if timestamp is not None:
+            if timestamp is not None and key is not None:
                 publication_times[key] = timestamp.isoformat()
     return publication_times
 
@@ -300,7 +321,7 @@ def parse_wind_text(value: str | None) -> tuple[float | None, float | None]:
     return bearing, speed
 
 
-def _select_nodes(container: object, selector: str) -> list[object]:
+def _select_nodes(container: HtmlNode, selector: str) -> list[HtmlNode]:
     try:
         return list(container.select(selector) or [])
     except (AttributeError, TypeError, ValueError):
@@ -309,14 +330,22 @@ def _select_nodes(container: object, selector: str) -> list[object]:
 
 def _node_classes(node: object) -> list[str]:
     try:
-        classes = node.get("class", [])
+        get = getattr(node, "get", None)
+        if not callable(get):
+            raise TypeError("Node has no attribute getter")
+        classes = get("class", [])
     except (AttributeError, KeyError, TypeError):
         try:
-            classes = node["class"]
+            getitem = getattr(node, "__getitem__", None)
+            if not callable(getitem):
+                raise TypeError("Node has no item getter")
+            classes = getitem("class")
         except (AttributeError, KeyError, TypeError):
             classes = []
     if isinstance(classes, str):
         return classes.split()
+    if not isinstance(classes, Iterable):
+        raise TypeError("Node classes are not iterable")
     return [item for item in classes if isinstance(item, str)]
 
 
@@ -331,7 +360,7 @@ def _condition_from_node(node: object) -> tuple[str | None, str | None]:
     return None, None
 
 
-def _hourly_condition_values(rows: list[object]) -> list[tuple[str | None, str | None]]:
+def _hourly_condition_values(rows: list[HtmlNode]) -> list[tuple[str | None, str | None]]:
     values = []
     for row in rows:
         icons = _select_nodes(row, "dd.weather_box > i")
@@ -340,7 +369,7 @@ def _hourly_condition_values(rows: list[object]) -> list[tuple[str | None, str |
 
 
 def _hourly_wind_values(
-    panel: object, row_count: int
+    panel: HtmlNode, row_count: int
 ) -> list[tuple[float | None, float | None]]:
     """Align independent direction and speed arrays to hourly weather rows."""
     directions = _select_nodes(panel, HOURLY_WIND_DIRECTION_SELECTOR)
@@ -381,7 +410,7 @@ def _optional_probability(value: str | None) -> int | None:
         return None
 
 
-def parse_hourly_forecast(panel: object | None, reference: datetime) -> list[dict]:
+def parse_hourly_forecast(panel: HtmlNode | None, reference: datetime) -> list[dict]:
     """Parse one open hourly panel, preserving rows when optional arrays are short."""
     if panel is None:
         return []
@@ -447,7 +476,7 @@ def parse_hourly_forecast(panel: object | None, reference: datetime) -> list[dic
     return forecast
 
 
-def _open_hourly_panel(soup: object) -> object | None:
+def _open_hourly_panel(soup: HtmlNode) -> HtmlNode | None:
     """Return the open weather panel that owns all hourly arrays."""
     try:
         panels = soup.select("div.open")
@@ -655,14 +684,20 @@ class NWeatherAPI:
             _LOGGER.info(f"[{BRAND}] Unregister device => {unique_id} [{self.area}]")
             self.unique[unique_id][DEVICE_UPDATE] = None
             
-    def _bs4_select_one(self, bs4, selector, bText=True, tag=""):
+    @overload
+    def _bs4_select_one(self, bs4: HtmlNode, selector: str, bText: Literal[True] = True, tag: str = "") -> str | None: ...
+
+    @overload
+    def _bs4_select_one(self, bs4: HtmlNode, selector: str, bText: Literal[False], tag: str = "") -> HtmlNode | None: ...
+
+    def _bs4_select_one(self, bs4: HtmlNode, selector: str, bText: bool = True, tag: str = "") -> str | HtmlNode | None:
 
         try:
             tmp = bs4.select_one(selector)
 
             if tmp is not None:
                 if bText:
-                    val = tmp.text.strip()
+                    val = _raw_node_text(tmp).strip()
                 else:
                     val = tmp
             else:
@@ -696,13 +731,13 @@ class NWeatherAPI:
 
             session = async_get_clientsession(self.hass)
 
-            response = await session.get(url, headers=hdr, timeout=30)
+            response = await session.get(url, headers=hdr, timeout=ClientTimeout(total=30))
             response.raise_for_status()
 
             soup = BeautifulSoup(await response.text(), "html.parser")
 
             #미세먼지
-            air = await session.get(url_air, headers=hdr, timeout=30)
+            air = await session.get(url_air, headers=hdr, timeout=ClientTimeout(total=30))
             air.raise_for_status()
 
             bs4air = BeautifulSoup(await air.text(), "html.parser")
@@ -725,7 +760,7 @@ class NWeatherAPI:
                 cWeather = self._bs4_select_one(wCast, "span.weather")
                 blind    = self._bs4_select_one(wCast, "span.blind")
 
-                WeatherCast = format_weather_cast(wCast.text, blind)
+                WeatherCast = format_weather_cast(_raw_node_text(wCast), blind)
 
                 #현재날씨
                 NowWeather = cWeather
@@ -789,7 +824,7 @@ class NWeatherAPI:
 
                 arrReportCard.append(tmp)
 
-                if "자외선" in gb:
+                if gb is not None and "자외선" in gb:
                     TodayUVGrade = gbVal
 
             # condition
@@ -852,13 +887,15 @@ class NWeatherAPI:
             tomorrowAState = "-"
 
             weekly = soup.find("div", {"class": "weekly_forecast_area _toggle_panel"})
-            date_info = weekly.find_all("li", {"class": "week_item"}) if weekly else []
+            date_info = weekly.find_all("li", class_="week_item") if isinstance(weekly, Tag) else []
             forecast = []
             forecast_hour = parse_hourly_forecast(hourly_panel, reference_time)
 
             bStart = False
             
             for di in date_info:
+                if not isinstance(di, Tag):
+                    continue
                 data = {}
 
                 # day
@@ -882,6 +919,8 @@ class NWeatherAPI:
                     # temp
                     low  = re2num(self._bs4_select_one(di, "span.lowest"))
                     high = re2num(self._bs4_select_one(di, "span.highest"))
+                    if low is None or high is None:
+                        raise ValueError("Missing daily temperature")
                     data["templow"]     = float(low)
                     data["temperature"] = float(high)
 
@@ -890,8 +929,8 @@ class NWeatherAPI:
 
                     conditionRaw = di.select("div.cell_weather > span > i")
 
-                    condition_am = conditionRaw[0]["class"][1].replace("ico_", "")
-                    condition_pm = conditionRaw[1]["class"][1].replace("ico_", "")
+                    condition_am = _node_classes(conditionRaw[0])[1].replace("ico_", "")
+                    condition_pm = _node_classes(conditionRaw[1])[1].replace("ico_", "")
 
                     data["condition"]    = CONDITIONS[condition_pm][0]
                     data["condition_am"] = CONDITIONS[condition_am][0]
@@ -903,15 +942,21 @@ class NWeatherAPI:
                     rainRaw = di.select("div.cell_weather > span > span.weather_left > span.rainfall")
 
                     rain_m = rainRaw[0].text
-                    data["rain_rate_am"] = int(re2num(rain_m))
+                    rain_m_value = re2num(rain_m)
+                    if rain_m_value is None:
+                        raise ValueError("Missing morning precipitation probability")
+                    data["rain_rate_am"] = int(rain_m_value)
 
                     rain_a = rainRaw[1].text
-                    data["rain_rate_pm"] = int(re2num(rain_a))
+                    rain_a_value = re2num(rain_a)
+                    if rain_a_value is None:
+                        raise ValueError("Missing afternoon precipitation probability")
+                    data["rain_rate_pm"] = int(rain_a_value)
 
                     forecast.append(data)
                         
                     #내일 날씨
-                    if di.select_one("div > div.cell_date > span > strong.day").text == "내일":
+                    if self._bs4_select_one(di, "div > div.cell_date > span > strong.day") == "내일":
                         # 내일 오전온도
                         tomorrowMTemp = low
 
@@ -946,7 +991,7 @@ class NWeatherAPI:
             no2Grade = None
             caiGrade = None
 
-            if pollution is not None:
+            if isinstance(pollution, Tag):
                 survey = pollution.select("ul.air_info_list > li")
 
                 arrSurveyRslt = []
