@@ -202,3 +202,32 @@ area는 기본값으로 '날씨'로 들어갑니다.<br>
 [version-shield]: https://img.shields.io/badge/version-v2.5.3-orange.svg
 [hakc-shield]: https://img.shields.io/badge/HAKC-Enjoy-blue.svg
 [hacs-shield]: https://img.shields.io/badge/HACS-Custom-red.svg
+
+## Development checks
+
+Use Python 3.14.7, uv 0.12.5 and Node.js 24 for the development environment. The
+hash-locked dependencies include Home Assistant 2026.8.0, Beautiful Soup 4.13.3 and
+Ruff 0.16.4. Pyright 1.1.413 is isolated under `devtools/pyright`; the integration's
+runtime requirements and Python 3.11 syntax compatibility remain unchanged.
+
+```sh
+python3 -m pip install uv==0.12.5
+uv venv --python 3.14.7 .venv
+uv pip sync --python .venv/bin/python --require-hashes requirements-dev.lock
+npm ci --prefix devtools/pyright --ignore-scripts --no-audit --no-fund
+devtools/pyright/node_modules/.bin/pyright --project pyrightconfig.json --outputjson
+.venv/bin/ruff check --no-cache custom_components tests tests_ha
+.venv/bin/python -B -m unittest discover -s tests -v
+.venv/bin/python -B -m unittest discover -s tests_ha -p test_options_flow.py -v
+```
+
+Pyright checks all nine integration modules, the two lightweight test modules and
+the real-Home-Assistant regression module. Run the two test directories in separate
+processes: `tests` installs lightweight module shims, while `tests_ha` uses the actual
+Home Assistant classes with synthetic entries and no running instance or network.
+The real-class regression protects construction against HA's getter-only
+`OptionsFlow.config_entry`, option precedence, the legacy default and submitted values.
+
+Keep `requirements-dev.in` and its hash-checked `requirements-dev.lock` together when
+intentionally updating development dependencies. These development checks do not
+install the integration into Home Assistant or operate any services or devices.

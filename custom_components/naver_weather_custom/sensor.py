@@ -37,8 +37,9 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
 class NWeatherSensor(NWeatherDevice):
     """Defines a NaverWeather Device entity."""
 
+    # HA declares a cached descriptor; retain this integration's property semantics.
     @property
-    def state(self):
+    def state(self) -> str | int | float:  # pyright: ignore[reportIncompatibleVariableOverride]
         """Return the state of the sensor."""
         value = self.api.result.get(self.device[0]) or ""
         if value.isdigit():
@@ -48,8 +49,9 @@ class NWeatherSensor(NWeatherDevice):
                 return float(value)
         return value
 
+    # HA declares a cached descriptor; retain this integration's property semantics.
     @property
-    def name(self) -> str:
+    def name(self) -> str:  # pyright: ignore[reportIncompatibleVariableOverride]
         """Return the name of the device."""
         if not self.api.get_data(self.unique_id):
             self.api.set_data(self.unique_id, True)
@@ -57,23 +59,26 @@ class NWeatherSensor(NWeatherDevice):
         else:
             return self.device[1]
 
+    # HA declares a cached descriptor; retain this integration's property semantics.
     @property
-    def icon(self):
+    def icon(self) -> str | None:  # pyright: ignore[reportIncompatibleVariableOverride]
         """Return the icon of the sensor."""
-        dicon = WEATHER_INFO.get(self.device[0])[3]
+        dicon = WEATHER_INFO[self.device[0]][3]
         if dicon != "":
             return dicon
 
+    # HA declares a cached descriptor; retain this integration's property semantics.
     @property
-    def device_class(self):
+    def device_class(self) -> str | None:  # pyright: ignore[reportIncompatibleVariableOverride]
         """Return the class of the sensor."""
-        dclass = WEATHER_INFO.get(self.device[0])[4]
+        dclass = WEATHER_INFO[self.device[0]][4]
         if dclass != "":
             return dclass
 
+    # HA declares a cached descriptor; retain this integration's property semantics.
     @property
-    def unit_of_measurement(self):
+    def unit_of_measurement(self) -> str | None:  # pyright: ignore[reportIncompatibleVariableOverride]
         """Return the unit of measurement of this sensor."""
-        unit = WEATHER_INFO.get(self.device[0])[2]
+        unit = WEATHER_INFO[self.device[0]][2]
         if unit != "":
             return unit

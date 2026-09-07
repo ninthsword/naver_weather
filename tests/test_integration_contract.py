@@ -23,27 +23,41 @@ def _module(name: str) -> types.ModuleType:
     return module
 
 
+def _set_attributes(module: types.ModuleType, **attributes: object) -> None:
+    """Populate deliberate module shims through Python's dynamic module interface."""
+    for name, value in attributes.items():
+        setattr(module, name, value)
+
+
 def install_home_assistant_shims() -> None:
     """Install the small Home Assistant surface needed by these unit tests."""
+    aiohttp = _module("aiohttp")
+
+    class ClientTimeout:
+        def __init__(self, *, total):
+            self.total = total
+
+    _set_attributes(aiohttp, ClientTimeout=ClientTimeout)
     bs4 = _module("bs4")
-    bs4.__path__ = []
-    bs4.BeautifulSoup = object
+    _set_attributes(bs4, __path__=[])
+    _set_attributes(bs4, BeautifulSoup=object)
     bs4_element = _module("bs4.element")
-    bs4_element.Tag = type("Tag", (), {})
-    bs4.element = bs4_element
+    _set_attributes(bs4_element, Tag=type("Tag", (), {}))
+    _set_attributes(bs4, element=bs4_element)
 
     class OptionalKey(str):
+        default: object
         def __new__(cls, value, default=None):
             key = super().__new__(cls, value)
             key.default = default
             return key
 
     voluptuous = _module("voluptuous")
-    voluptuous.Schema = lambda value: value
-    voluptuous.Optional = OptionalKey
-    voluptuous.All = lambda *values: values
-    voluptuous.Coerce = lambda value: value
-    voluptuous.Range = lambda **kwargs: kwargs
+    _set_attributes(voluptuous, Schema=lambda value: value)
+    _set_attributes(voluptuous, Optional=OptionalKey)
+    _set_attributes(voluptuous, All=lambda *values: values)
+    _set_attributes(voluptuous, Coerce=lambda value: value)
+    _set_attributes(voluptuous, Range=lambda **kwargs: kwargs)
 
     homeassistant = _module("homeassistant")
     config_entries = _module("homeassistant.config_entries")
@@ -55,17 +69,18 @@ def install_home_assistant_shims() -> None:
     components = _module("homeassistant.components")
     sensor = _module("homeassistant.components.sensor")
     weather = _module("homeassistant.components.weather")
+    weather_const = _module("homeassistant.components.weather.const")
     const = _module("homeassistant.const")
 
-    homeassistant.config_entries = config_entries
-    homeassistant.core = core
-    homeassistant.helpers = helpers
-    homeassistant.components = components
-    helpers.config_validation = config_validation
-    helpers.aiohttp_client = aiohttp_client
-    helpers.update_coordinator = update_coordinator
-    components.sensor = sensor
-    components.weather = weather
+    _set_attributes(homeassistant, config_entries=config_entries)
+    _set_attributes(homeassistant, core=core)
+    _set_attributes(homeassistant, helpers=helpers)
+    _set_attributes(homeassistant, components=components)
+    _set_attributes(helpers, config_validation=config_validation)
+    _set_attributes(helpers, aiohttp_client=aiohttp_client)
+    _set_attributes(helpers, update_coordinator=update_coordinator)
+    _set_attributes(components, sensor=sensor)
+    _set_attributes(components, weather=weather)
 
     class ConfigEntry:
         pass
@@ -93,6 +108,10 @@ def install_home_assistant_shims() -> None:
             return {"type": "form", **kwargs}
 
     class OptionsFlow:
+        @property
+        def config_entry(self):
+            raise ValueError("Unavailable before HA initializes the flow")
+
         def async_create_entry(self, **kwargs):
             return {"type": "create_entry", **kwargs}
 
@@ -100,6 +119,13 @@ def install_home_assistant_shims() -> None:
             return {"type": "form", **kwargs}
 
     class DataUpdateCoordinator:
+        @classmethod
+        def __class_getitem__(cls, item):
+            return cls
+
+        async def _async_update_data(self):
+            raise NotImplementedError
+
         def __init__(self, hass, *, logger, name, update_interval, config_entry):
             self.hass = hass
             self.logger = logger
@@ -135,6 +161,10 @@ def install_home_assistant_shims() -> None:
             return getattr(self, "_attr_device_info", None)
 
     class CoordinatorEntity(Entity):
+        @classmethod
+        def __class_getitem__(cls, item):
+            return cls
+
         def __init__(self, coordinator):
             self.coordinator = coordinator
 
@@ -144,28 +174,32 @@ def install_home_assistant_shims() -> None:
         async def async_will_remove_from_hass(self):
             return None
 
-    config_entries.ConfigEntry = ConfigEntry
-    config_entries.ConfigEntryNotReady = ConfigEntryNotReady
-    config_entries.ConfigFlow = ConfigFlow
-    config_entries.OptionsFlow = OptionsFlow
-    config_entries.SOURCE_IMPORT = "import"
-    core.HomeAssistant = object
-    core.callback = lambda function: function
-    config_validation.string = str
-    aiohttp_client.async_get_clientsession = lambda hass: None
-    update_coordinator.DataUpdateCoordinator = DataUpdateCoordinator
-    update_coordinator.CoordinatorEntity = CoordinatorEntity
+    _set_attributes(config_entries, ConfigEntry=ConfigEntry)
+    _set_attributes(config_entries, ConfigFlowResult=dict)
+    _set_attributes(config_entries, ConfigEntryNotReady=ConfigEntryNotReady)
+    _set_attributes(config_entries, ConfigFlow=ConfigFlow)
+    _set_attributes(config_entries, OptionsFlow=OptionsFlow)
+    _set_attributes(config_entries, SOURCE_IMPORT="import")
+    _set_attributes(core, HomeAssistant=object)
+    _set_attributes(core, callback=lambda function: function)
+    _set_attributes(config_validation, string=str)
+    _set_attributes(aiohttp_client, async_get_clientsession=lambda hass: None)
+    _set_attributes(update_coordinator, DataUpdateCoordinator=DataUpdateCoordinator)
+    _set_attributes(update_coordinator, CoordinatorEntity=CoordinatorEntity)
     class WeatherEntity(Entity):
-        pass
+        @property
+        def state(self):
+            return getattr(self, "condition", None)
 
-    weather.WeatherEntity = WeatherEntity
-    weather.DOMAIN = "weather"
-    weather.Forecast = dict
-    weather.WeatherEntityFeature = types.SimpleNamespace(
+    _set_attributes(weather, WeatherEntity=WeatherEntity)
+    _set_attributes(weather, DOMAIN="weather")
+    _set_attributes(weather, Forecast=dict)
+    _set_attributes(weather, WeatherEntityFeature=types.SimpleNamespace(
         FORECAST_DAILY=1,
         FORECAST_TWICE_DAILY=2,
         FORECAST_HOURLY=4,
-    )
+    ))
+    _set_attributes(weather_const, WeatherEntityFeature=vars(weather)["WeatherEntityFeature"])
     for name in (
         "ATTR_CONDITION_CLEAR_NIGHT",
         "ATTR_CONDITION_CLOUDY",
@@ -193,17 +227,17 @@ def install_home_assistant_shims() -> None:
         ("ATTR_FORECAST_WIND_SPEED", "wind_speed"),
     ):
         setattr(weather, name, value)
-    sensor.SensorDeviceClass = types.SimpleNamespace(
+    _set_attributes(sensor, SensorDeviceClass=types.SimpleNamespace(
         TEMPERATURE="temperature", HUMIDITY="humidity", PM25="pm25"
-    )
-    const.UnitOfTemperature = types.SimpleNamespace(CELSIUS="°C")
-    const.UnitOfDensity = types.SimpleNamespace(
+    ))
+    _set_attributes(const, UnitOfTemperature=types.SimpleNamespace(CELSIUS="°C"))
+    _set_attributes(const, UnitOfDensity=types.SimpleNamespace(
         MICROGRAMS_PER_CUBIC_METER="µg/m³"
-    )
-    const.UnitOfPrecipitationDepth = types.SimpleNamespace(MILLIMETERS="mm")
-    const.UnitOfSpeed = types.SimpleNamespace(METERS_PER_SECOND="m/s")
-    const.UnitOfVolumetricFlux = types.SimpleNamespace(MILLIMETERS_PER_HOUR="mm/h")
-    const.PERCENTAGE = "%"
+    ))
+    _set_attributes(const, UnitOfPrecipitationDepth=types.SimpleNamespace(MILLIMETERS="mm"))
+    _set_attributes(const, UnitOfSpeed=types.SimpleNamespace(METERS_PER_SECOND="m/s"))
+    _set_attributes(const, UnitOfVolumetricFlux=types.SimpleNamespace(MILLIMETERS_PER_HOUR="mm/h"))
+    _set_attributes(const, PERCENTAGE="%")
 
 
 install_home_assistant_shims()
@@ -236,7 +270,7 @@ class FakeEntry:
     """Small config-entry replacement for API and flow tests."""
 
     def __init__(self, area="날씨", today=_MISSING, *, options=None, unique_id=None):
-        self.data = {"area": area}
+        self.data: dict[str, object] = {"area": area}
         if today is not _MISSING:
             self.data["today"] = today
         self.options = options or {}
@@ -321,36 +355,36 @@ class IntegrationContractTest(unittest.TestCase):
         ]
         self.assertEqual(len(assignments), 1)
         call = assignments[0].value
-        self.assertIsInstance(call, ast.Call)
-        self.assertIsInstance(call.func, ast.Name)
+        assert isinstance(call, ast.Call)
+        assert isinstance(call.func, ast.Name)
         self.assertEqual(call.func.id, "retain_previous_humidity")
         self.assertEqual(len(call.args), 2)
         current = call.args[0]
-        self.assertIsInstance(current, ast.Call)
-        self.assertIsInstance(current.func, ast.Name)
+        assert isinstance(current, ast.Call)
+        assert isinstance(current.func, ast.Name)
         self.assertEqual(current.func.id, "re2num")
         self.assertEqual(len(current.args), 1)
         current_key = current.args[0]
-        self.assertIsInstance(current_key, ast.Call)
-        self.assertIsInstance(current_key.func, ast.Name)
+        assert isinstance(current_key, ast.Call)
+        assert isinstance(current_key.func, ast.Name)
         self.assertEqual(current_key.func.id, "re2key")
         self.assertEqual(len(current_key.args), 2)
-        self.assertIsInstance(current_key.args[0], ast.Constant)
+        assert isinstance(current_key.args[0], ast.Constant)
         self.assertEqual(current_key.args[0].value, "습도")
-        self.assertIsInstance(current_key.args[1], ast.Name)
+        assert isinstance(current_key.args[1], ast.Name)
         self.assertEqual(current_key.args[1].id, "summ")
         previous = call.args[1]
-        self.assertIsInstance(previous, ast.Call)
-        self.assertIsInstance(previous.func, ast.Attribute)
+        assert isinstance(previous, ast.Call)
+        assert isinstance(previous.func, ast.Attribute)
         self.assertEqual(previous.func.attr, "get")
-        self.assertIsInstance(previous.func.value, ast.Attribute)
+        assert isinstance(previous.func.value, ast.Attribute)
         self.assertEqual(previous.func.value.attr, "result")
-        self.assertIsInstance(previous.func.value.value, ast.Name)
+        assert isinstance(previous.func.value.value, ast.Name)
         self.assertEqual(previous.func.value.value.id, "self")
-        self.assertIsInstance(previous.args[0], ast.Subscript)
-        self.assertIsInstance(previous.args[0].value, ast.Name)
+        assert isinstance(previous.args[0], ast.Subscript)
+        assert isinstance(previous.args[0].value, ast.Name)
         self.assertEqual(previous.args[0].value.id, "NOW_HUMI")
-        self.assertIsInstance(previous.args[0].slice, ast.Constant)
+        assert isinstance(previous.args[0].slice, ast.Constant)
         self.assertEqual(previous.args[0].slice.value, 0)
 
     def test_single_ten_minute_coordinator_reports_later_failure(self):

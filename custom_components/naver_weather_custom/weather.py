@@ -13,8 +13,8 @@ from homeassistant.components.weather import (
     ATTR_FORECAST_WIND_BEARING,
     Forecast,
     WeatherEntity,
-    WeatherEntityFeature,
 )
+from homeassistant.components.weather.const import WeatherEntityFeature
 from homeassistant.const import (
     UnitOfPrecipitationDepth,
     UnitOfSpeed,
@@ -73,15 +73,17 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
     async_add_entity()
 
 
-class NWeatherMain(NWeatherDevice, WeatherEntity):
+# Preserve the supported HA MRO mixing cached descriptors and dynamic properties.
+class NWeatherMain(NWeatherDevice, WeatherEntity):  # pyright: ignore[reportIncompatibleVariableOverride]
     """Representation of a weather condition."""
     _attr_native_temperature_unit = UnitOfTemperature.CELSIUS
     _attr_native_precipitation_unit = UnitOfPrecipitationDepth.MILLIMETERS
     _attr_native_wind_speed_unit = UnitOfSpeed.METERS_PER_SECOND
     _attr_supported_features = ( WeatherEntityFeature.FORECAST_DAILY | WeatherEntityFeature.FORECAST_TWICE_DAILY | WeatherEntityFeature.FORECAST_HOURLY )
     
+    # HA declares a cached descriptor; retain this integration's property semantics.
     @property
-    def name(self) -> str:
+    def name(self) -> str:  # pyright: ignore[reportIncompatibleVariableOverride]
         """Return the name of the device."""
         if not self.api.get_data(self.unique_id):
             self.api.set_data(self.unique_id, True)
@@ -91,47 +93,48 @@ class NWeatherMain(NWeatherDevice, WeatherEntity):
         else:
             return self.device[1]
 
+    # HA declares a cached descriptor; retain this integration's property semantics.
     @property
-    def native_temperature(self):
+    def native_temperature(self) -> float | None:  # pyright: ignore[reportIncompatibleVariableOverride]
         """Return the temperature."""
         try:
             return float(self.api.result.get(NOW_TEMP[0]))
         except (AttributeError, KeyError, TypeError, ValueError):
             return
 
+    # HA declares a cached descriptor; retain this integration's property semantics.
     @property
-    def humidity(self):
+    def humidity(self) -> int | None:  # pyright: ignore[reportIncompatibleVariableOverride]
         """Return the humidity."""
         try:
             return int(self.api.result.get(NOW_HUMI[0]))
         except (AttributeError, KeyError, TypeError, ValueError):
             return
 
+    # HA declares a cached descriptor; retain this integration's property semantics.
     @property
-    def native_wind_speed(self):
+    def native_wind_speed(self) -> float | None:  # pyright: ignore[reportIncompatibleVariableOverride]
         """Return the wind speed."""
         try:
             return float(self.api.result.get(WIND_SPEED[0]))
         except (AttributeError, KeyError, TypeError, ValueError):
             return
 
+    # HA declares a cached descriptor; retain this integration's property semantics.
     @property
-    def wind_bearing(self):
+    def wind_bearing(self) -> float | str | None:  # pyright: ignore[reportIncompatibleVariableOverride]
         """Return the wind bearing."""
         return self.api.result.get(WIND_DIR[0])
 
+    # HA declares a cached descriptor; retain this integration's property semantics.
     @property
-    def condition(self):
+    def condition(self) -> str | None:  # pyright: ignore[reportIncompatibleVariableOverride]
         """Return the weather condition."""
         return self.api.result.get(CONDITION[0])
 
+    # HA declares a cached descriptor; retain this integration's property semantics.
     @property
-    def state(self):
-        """Return the weather state."""
-        return self.api.result.get(CONDITION[0])
-
-    @property
-    def attribution(self):
+    def attribution(self) -> str:  # pyright: ignore[reportIncompatibleVariableOverride]
         """Return the attribution."""
         #return f"{self.api.result.get(LOCATION[0])} - Weather forecast from Naver, Powered by miumida, Custom by ninthsword"
         return f"{self.api.weathertype}, {self.api.result.get(LOCATION[0])} - Weather forecast from Naver, Powered by miumida, Custom by ninthsword"

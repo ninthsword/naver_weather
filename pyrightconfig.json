@@ -1,0 +1,17 @@
+{
+  "include": [
+    "custom_components/naver_weather_custom",
+    "tests",
+    "tests_ha"
+  ],
+  "exclude": [
+    "**/node_modules",
+    "**/__pycache__",
+    "**/.venv"
+  ],
+  "pythonVersion": "3.14",
+  "typeCheckingMode": "standard",
+  "venvPath": ".",
+  "venv": ".venv",
+  "reportUnnecessaryTypeIgnoreComment": "error"
+}

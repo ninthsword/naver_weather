@@ -2,6 +2,7 @@
 import homeassistant.helpers.config_validation as cv
 import voluptuous as vol
 from homeassistant import config_entries
+from homeassistant.config_entries import ConfigFlowResult
 from homeassistant.core import callback
 
 from .const import CONF_AREA, CONF_TODAY, DEFAULT_AREA, DOMAIN
@@ -18,12 +19,14 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     VERSION = 1
 
-    async def async_step_user(self, user_input=None):
+    async def async_step_user(self, user_input: dict[str, str | bool] | None = None) -> ConfigFlowResult:
         """Handle the initial step."""
-        errors = {}
+        errors: dict[str, str] = {}
 
         if user_input is not None:
             area = user_input.get(CONF_AREA, DEFAULT_AREA)
+            if area and not isinstance(area, str):
+                raise TypeError("Area must be text")
             if not area or not area.strip():
                 area = DEFAULT_AREA
             user_input[CONF_AREA] = area
@@ -45,9 +48,13 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             errors=errors,
         )
 
-    async def async_step_import(self, user_input=None):
+    async def async_step_import(self, user_input: dict[str, str | bool] | None = None) -> ConfigFlowResult:
         """Handle configuration by yaml file."""
+        if user_input is None:
+            raise TypeError("Import data is required")
         area = user_input[CONF_AREA]
+        if area and not isinstance(area, str):
+            raise TypeError("Area must be text")
         if not area or not area.strip():
             area = DEFAULT_AREA
             user_input[CONF_AREA] = area
@@ -56,7 +63,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if self._area_is_configured(normalized_area):
             return self.async_abort(reason="already_configured")
         self._abort_if_unique_id_configured()
-        return self.async_create_entry(title=user_input[CONF_AREA], data=user_input)
+        return self.async_create_entry(title=area, data=user_input)
 
     def _area_is_configured(self, normalized_area: str) -> bool:
         """Return whether a canonical area matches a new or legacy entry."""
@@ -70,7 +77,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     @staticmethod
     @callback
-    def async_get_options_flow(config_entry):
+    def async_get_options_flow(config_entry: config_entries.ConfigEntry) -> "OptionsFlowHandler":
         """Expose only the existing forecast display preference after setup."""
         return OptionsFlowHandler(config_entry)
 
@@ -80,15 +87,15 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
 
     def __init__(self, config_entry: config_entries.ConfigEntry):
         """Initialize the options flow."""
-        self.config_entry = config_entry
+        self._entry = config_entry
 
-    async def async_step_init(self, user_input=None):
+    async def async_step_init(self, user_input: dict[str, bool] | None = None) -> ConfigFlowResult:
         """Edit only the existing today preference."""
         if user_input is not None:
             return self.async_create_entry(title="", data=user_input)
 
-        today = self.config_entry.options.get(
-            CONF_TODAY, self.config_entry.data.get(CONF_TODAY, True)
+        today = self._entry.options.get(
+            CONF_TODAY, self._entry.data.get(CONF_TODAY, True)
         )
         return self.async_show_form(
             step_id="init",
