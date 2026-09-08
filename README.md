@@ -206,9 +206,11 @@ area는 기본값으로 '날씨'로 들어갑니다.<br>
 ## Development checks
 
 Use Python 3.14.7, uv 0.12.5 and Node.js 24 for the development environment. The
-hash-locked dependencies include Home Assistant 2026.8.0, Beautiful Soup 4.13.3 and
+hash-locked dependencies include Home Assistant 2026.8.0, Beautiful Soup 4.12.3 and
 Ruff 0.16.4. Pyright 1.1.413 is isolated under `devtools/pyright`; the integration's
-runtime requirements and Python 3.11 syntax compatibility remain unchanged.
+Python 3.11 syntax compatibility remains unchanged. The runtime and development
+Beautiful Soup pins stay aligned at 4.12.3 for compatibility in Home Assistant's
+shared Python environment.
 
 ```sh
 python3 -m pip install uv==0.12.5
@@ -218,15 +220,19 @@ npm ci --prefix devtools/pyright --ignore-scripts --no-audit --no-fund
 devtools/pyright/node_modules/.bin/pyright --project pyrightconfig.json --outputjson
 .venv/bin/ruff check --no-cache custom_components tests tests_ha
 .venv/bin/python -B -m unittest discover -s tests -v
-.venv/bin/python -B -m unittest discover -s tests_ha -p test_options_flow.py -v
+.venv/bin/python -B -m unittest discover -s tests_ha -p 'test_*.py' -v
 ```
 
 Pyright checks all nine integration modules, the two lightweight test modules and
-the real-Home-Assistant regression module. Run the two test directories in separate
+both real-Home-Assistant regression modules. Run the two test directories in separate
 processes: `tests` installs lightweight module shims, while `tests_ha` uses the actual
 Home Assistant classes with synthetic entries and no running instance or network.
 The real-class regression protects construction against HA's getter-only
 `OptionsFlow.config_entry`, option precedence, the legacy default and submitted values.
+Fresh subprocess parser tests import the actual Home Assistant and Beautiful Soup
+packages and exercise synthetic HTML, active-panel CSS selection, hourly rollover,
+optional values and publication metadata. Their expectations are independent of
+the selected parser version.
 
 Keep `requirements-dev.in` and its hash-checked `requirements-dev.lock` together when
 intentionally updating development dependencies. These development checks do not

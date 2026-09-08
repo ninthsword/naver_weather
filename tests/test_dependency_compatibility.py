@@ -19,7 +19,7 @@ class DependencyCompatibilityTest(unittest.TestCase):
 
     def test_manifest_pins_python_3_beautifulsoup_release(self):
         manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
-        self.assertIn("beautifulsoup4==4.13.3", manifest["requirements"])
+        self.assertIn("beautifulsoup4==4.12.3", manifest["requirements"])
 
     def _run_real_package(self, script):
         result = subprocess.run(
@@ -34,7 +34,7 @@ class DependencyCompatibilityTest(unittest.TestCase):
         script = f"""
             from importlib.metadata import version
             import importlib.util
-            assert version("beautifulsoup4") == "4.13.3"
+            assert version("beautifulsoup4") == "4.12.3"
             import bs4
             from bs4 import BeautifulSoup
             from bs4.element import Tag
@@ -51,7 +51,7 @@ class DependencyCompatibilityTest(unittest.TestCase):
         script = f"""
             from importlib.metadata import version
             import importlib.util
-            assert version("beautifulsoup4") == "4.13.3"
+            assert version("beautifulsoup4") == "4.12.3"
             import bs4
             from bs4 import BeautifulSoup
             from bs4.element import Tag
