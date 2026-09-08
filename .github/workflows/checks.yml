@@ -35,8 +35,8 @@ jobs:
         run: .venv/bin/ruff check --no-cache custom_components tests tests_ha
       - name: Lightweight offline tests
         run: .venv/bin/python -B -m unittest discover -s tests -v
-      - name: Real Home Assistant options-flow regression
-        run: .venv/bin/python -B -m unittest discover -s tests_ha -p test_options_flow.py -v
+      - name: Real Home Assistant options-flow and parser regressions
+        run: .venv/bin/python -B -m unittest discover -s tests_ha -p 'test_*.py' -v
       - name: Check runtime Python 3.11 syntax
         run: |
           .venv/bin/python -B - <<'PYTHON'
