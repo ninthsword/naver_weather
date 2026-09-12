@@ -24,7 +24,6 @@
             "init": {
                 "title": "Naver Weather Options.",
                 "data": {
-                    "area": "Area : Where you want to know.",
                     "today": "Today: Weekly forecast includes today's weather."
                 }
             }

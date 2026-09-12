@@ -123,6 +123,73 @@ def publication_soup(body):
 """
 
 
+UPDATE_SETUP = """
+import asyncio
+from tempfile import TemporaryDirectory
+from types import MappingProxyType
+from unittest.mock import AsyncMock, Mock, patch
+
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
+
+from custom_components.naver_weather_custom.const import (
+    DOMAIN, NDUST, NOW_TEMP, RAIN_PERCENT, UDUST, WEATHER_INFO, WIND_DIR,
+)
+from custom_components.naver_weather_custom.coordinator import NWeatherDataUpdateCoordinator
+from custom_components.naver_weather_custom.sensor import NWeatherSensor
+
+
+def air_markup(fine=None, ultrafine=None):
+    return ''.join(
+        '<div class="state_info"><div class="grade"><div class="text_box">'
+        + (f'<span class="num">{escape(value)}</span>' if value is not None else '')
+        + '</div></div></div>'
+        for value in (fine, ultrafine)
+    )
+
+
+def weather_markup(probabilities=(), temperature="-2.5", direction="북서"):
+    return (
+        f'<div class="temperature_text">{escape(temperature)}°</div>'
+        '<div class="weather_info"><div><div><div class="temperature_info">'
+        f'<dl>체감 -3.5 습도 0 바람({escape(direction)}풍) 2.5m/s</dl>'
+        '</div></div></div></div>'
+        + optional_arrays(probabilities=probabilities)
+    )
+
+
+async def update_from_markup(client, weather, air):
+    responses = [Mock(), Mock()]
+    for response, markup in zip(responses, (weather, air)):
+        response.text = AsyncMock(return_value=markup)
+    session = Mock(get=AsyncMock(side_effect=responses))
+    with patch.object(api, "async_get_clientsession", return_value=session):
+        await client.update()
+    assert session.get.await_count == 2
+    for response in responses:
+        response.raise_for_status.assert_called_once_with()
+
+
+def make_entities(directory):
+    hass = HomeAssistant(directory)
+    entry = ConfigEntry(
+        version=1, minor_version=1, domain=DOMAIN, title="Synthetic weather",
+        data={"area": "Synthetic"}, options={}, source="user",
+        unique_id="synthetic-weather", discovery_keys=MappingProxyType({}),
+        subentries_data=None,
+    )
+    client = api.NWeatherAPI(hass, entry, 1)
+    coordinator = NWeatherDataUpdateCoordinator(hass, client, entry)
+    entities = {
+        key: NWeatherSensor(WEATHER_INFO[key], client, coordinator)
+        for key in (NDUST[0], UDUST[0], NOW_TEMP[0], RAIN_PERCENT[0], WIND_DIR[0])
+    }
+    assert all(isinstance(entity, CoordinatorEntity) for entity in entities.values())
+    return client, entities
+"""
+
+
 class ParserDependencyTest(unittest.TestCase):
     """Keep identical behavior expectations across supported parser environments."""
 
@@ -139,6 +206,96 @@ class ParserDependencyTest(unittest.TestCase):
             check=False,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    def _run_update(self, script: str) -> None:
+        self._run_parser(UPDATE_SETUP + dedent(script))
+
+    def test_summary_probability_average_uses_first_twelve_valid_count(self) -> None:
+        self._run_update("""
+            async def check():
+                cases = [
+                    (("100%",) * 12, 100.0),
+                    (("20%", "40%"), 30.0),
+                    (("0%", "100%"), 50.0),
+                    (("0%",), 0.0),
+                    ((), None),
+                    (("bad%", "-1%", "101%", "20% extra", "—", "", "-"), None),
+                    (("bad%", "0%", "100%", "101%", "-20%", "50%"), 50.0),
+                    (("bad%",) * 12 + ("100%",), None),
+                    (("0%",) * 12 + ("100%",), 0.0),
+                    (("bad%",) * 11 + ("20%", "100%"), 20.0),
+                    ((" 25% ", "75.5%"), 50.2),
+                ]
+                with TemporaryDirectory() as directory:
+                    client, entities = make_entities(directory)
+                    for probabilities, expected in cases:
+                        await update_from_markup(client, weather_markup(probabilities), "")
+                        result = client.result[RAIN_PERCENT[0]]
+                        state = entities[RAIN_PERCENT[0]].state
+                        if expected is None:
+                            assert result is None and state is None, (probabilities, result, state)
+                        else:
+                            assert float(result) == expected, (probabilities, result)
+                            assert float(state) == expected, (probabilities, state)
+            asyncio.run(check())
+        """)
+
+    def test_missing_dust_stays_unknown_through_real_sensor_and_recovers(self) -> None:
+        self._run_update("""
+            async def check():
+                with TemporaryDirectory() as directory:
+                    client, entities = make_entities(directory)
+                    cases = [
+                        (None, None), ("12", "7"), (None, "7"),
+                        ("12", None), ("0", "0"), (None, None), ("18", "9"),
+                    ]
+                    for fine, ultrafine in cases:
+                        await update_from_markup(
+                            client, weather_markup(), air_markup(fine, ultrafine)
+                        )
+                        for key, expected in ((NDUST[0], fine), (UDUST[0], ultrafine)):
+                            assert client.result[key] == expected, (key, client.result[key])
+                            expected_state = int(expected) if expected is not None else None
+                            assert entities[key].state == expected_state, (key, entities[key].state)
+                    await update_from_markup(client, weather_markup(), "")
+                    assert all(entities[key].state is None for key in (NDUST[0], UDUST[0]))
+            asyncio.run(check())
+        """)
+
+    def test_sensor_preserves_numeric_text_and_unknown_values(self) -> None:
+        self._run_update("""
+            async def check():
+                with TemporaryDirectory() as directory:
+                    client, entities = make_entities(directory)
+                    sensor = entities[NOW_TEMP[0]]
+                    for temperature in ("-2.5", "-1", "0", "3.5"):
+                        await update_from_markup(client, weather_markup(temperature=temperature), "")
+                        expected = 0 if temperature == "0" else temperature
+                        assert sensor.state == expected, (temperature, sensor.state)
+                    for value, expected in (
+                        (None, None), (0, 0), (0.0, 0.0), (-2.5, -2.5),
+                        ("0", 0), ("12", 12), ("-2", "-2"), ("2.5", "2.5"),
+                        ("맑음", "맑음"), ("", ""), ("²", "²"),
+                    ):
+                        client.result[NOW_TEMP[0]] = value
+                        assert sensor.state == expected, (value, sensor.state)
+                        assert type(sensor.state) is type(expected), (value, sensor.state)
+                    del client.result[NOW_TEMP[0]]
+                    assert sensor.state is None
+            asyncio.run(check())
+        """)
+
+    def test_current_wind_direction_does_not_capture_literal_pipe(self) -> None:
+        self._run_update("""
+            async def check():
+                with TemporaryDirectory() as directory:
+                    client, entities = make_entities(directory)
+                    for direction, expected in (("|", None), ("북서", "북서"), ("남동", "남동")):
+                        await update_from_markup(client, weather_markup(direction=direction), "")
+                        assert client.result[WIND_DIR[0]] == expected
+                        assert entities[WIND_DIR[0]].state == expected
+            asyncio.run(check())
+        """)
 
     def test_hourly_rollover_css_scope_and_unicode_alignment(self) -> None:
         self._run_parser("""

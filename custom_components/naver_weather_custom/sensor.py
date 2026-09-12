@@ -7,15 +7,6 @@ from .nweather_device import NWeatherDevice
 _LOGGER = logging.getLogger(__name__)
 
 
-def isInt(v):
-    """Check number is integer."""
-    try:
-        int(v)
-        return True
-    except ValueError:
-        return False
-
-
 async def async_setup_entry(hass, config_entry, async_add_entities):
     """Set up sensor for Naver Weather sensors."""
 
@@ -39,14 +30,11 @@ class NWeatherSensor(NWeatherDevice):
 
     # HA declares a cached descriptor; retain this integration's property semantics.
     @property
-    def state(self) -> str | int | float:  # pyright: ignore[reportIncompatibleVariableOverride]
+    def state(self) -> str | int | float | None:  # pyright: ignore[reportIncompatibleVariableOverride]
         """Return the state of the sensor."""
-        value = self.api.result.get(self.device[0]) or ""
-        if value.isdigit():
-            if isInt(value):
-                return int(value)
-            else:
-                return float(value)
+        value = self.api.result.get(self.device[0])
+        if isinstance(value, str) and value.isdecimal():
+            return int(value)
         return value
 
     # HA declares a cached descriptor; retain this integration's property semantics.

@@ -588,7 +588,7 @@ def re2keyWD(val):
     if val is None:
         return None
 
-    r = re.compile(r"[동|서|남|북]+")
+    r = re.compile(r"[동서남북]+")
     rtn = r.findall(val)
 
     if len(rtn) > 0:
@@ -791,24 +791,20 @@ class NWeatherAPI:
             # 강수
             Rainfall    = self._bs4_select_one(soup, "div.climate_box > div.graph_wrap > ul > li > div")
             
-            # 자외선 지수
+            # Average valid probabilities within the first twelve positions.
             rainPercentVal = soup.select("div.climate_box > div.icon_wrap > ul > li > em")
+            probabilities = []
+            for em in rainPercentVal[:12]:
+                match = re.fullmatch(r"(\d{1,3}(?:\.\d+)?)\s*%", _node_text(em))
+                if match is not None:
+                    probability = float(match.group(1))
+                    if 0 <= probability <= 100:
+                        probabilities.append(probability)
+            rainPercent = (
+                str(round(sum(probabilities) / len(probabilities), 1))
+                if probabilities else None
+            )
 
-            nCnt = 0
-            rainSum = 0
-
-            for em in rainPercentVal:
-
-                if nCnt > 11:
-                    continue
-
-                if '%' in em.text:
-                    rainSum += int(em.text[:-1])
-
-                nCnt += 1
-
-            rainPercent = str( round(rainSum/11, 1) if rainSum > 0 else 0 )
-            
             # 미세먼지/초미세먼지/자외선(등급)/일몰일출
             reportCardWrap = soup.select("div.report_card_wrap > ul.today_chart_list > li.item_today")
            
@@ -1022,12 +1018,6 @@ class NWeatherAPI:
 
             # 오염물질 제공
             offerInfo = self._bs4_select_one(bs4air, "div.inner > div.offer_info > span.update")
-
-            if FineDust is None:
-                FineDust = '0'
-
-            if UltraFineDust is None:
-                UltraFineDust = '0'
 
             if Rainfall is None:
                 Rainfall = '0'

@@ -554,6 +554,15 @@ class IntegrationContractTest(unittest.TestCase):
         saved = asyncio.run(options.async_step_init({"today": False}))
         self.assertEqual(saved["data"], {"today": False})
 
+    def test_options_translations_match_the_area_immutable_form(self):
+        for name in ("strings.json", "translations/en.json", "translations/ko.json"):
+            with self.subTest(name=name):
+                translations = json.loads((INTEGRATION / name).read_text(encoding="utf-8"))
+                self.assertIn("area", translations["config"]["step"]["user"]["data"])
+                self.assertEqual(
+                    set(translations["options"]["step"]["init"]["data"]), {"today"}
+                )
+
     def test_legacy_today_default_and_explicit_values_are_preserved(self):
         legacy = api_module.NWeatherAPI(FakeHass(), FakeEntry(), 1)
         self.assertTrue(legacy.today)
