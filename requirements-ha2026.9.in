@@ -1,0 +1,4 @@
+beautifulsoup4==4.12.3
+ruff==0.16.4
+pytest-homeassistant-custom-component==0.13.365
+homeassistant==2026.9.2
