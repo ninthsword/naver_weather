@@ -3,9 +3,12 @@
 import unittest
 from types import MappingProxyType
 
-import voluptuous as vol
 from homeassistant.config_entries import ConfigEntry, OptionsFlow
 from homeassistant.data_entry_flow import FlowResultType
+
+# isort: split
+# Home Assistant installs its validation compatibility aliases during import.
+import voluptuous as vol
 
 from custom_components.naver_weather_custom.config_flow import OptionsFlowHandler
 from custom_components.naver_weather_custom.const import CONF_AREA, CONF_TODAY, DOMAIN
