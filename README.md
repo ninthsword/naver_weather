@@ -1,4 +1,4 @@
-Custom from [miumi](https://github.com/miumida/naver_weather)
+원작: [miumi](https://github.com/miumida/naver_weather)
 
 v2.5.3-0.3
 
@@ -26,7 +26,7 @@ v2.5.3-0.3
 
 <br>
 
-## Version history
+## 버전 기록
 | Version | Date        | 내용              |
 | :-----: | :---------: | --------------------------------------------------------------------------------------- |
 | v1.0.0  | 2020.05.07  | First version  |
@@ -75,12 +75,12 @@ v2.5.3-0.3
 | v2.5.3 | 2025.03.22  | 네이버 미세먼지 페이지 변경 대응 |
 <br>
 
-## Installation
+## 설치
 ### _My Home Assistant_ HACS로 설치
 - 아래 링크를 클릭해서 이동 후 다운로드 버튼을 눌러 설치하세요.<br>
 - 다운로드 후 Home Assistant를 재시작합니다.<br>
 [![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=ninthsword&repository=naver_weather&category=integration)
-### Manual
+### 수동 설치
 - HA 설치 경로 아래 custom_components에 naver_weather_custom폴더 안의 전체 파일을 복사해줍니다.<br>
   `<config directory>/custom_components/naver_weather_custom/`<br>
 - configuration.yaml 파일에 설정을 추가합니다.<br>
@@ -90,33 +90,33 @@ v2.5.3-0.3
 - 'https://github.com/ninthsword/naver_weather' 주소 입력, Category에 'integration' 선택 후, 저장
 - HACS > Integretions 메뉴 선택 후, naver_weather 검색하여 설치
 
-### Custom-domain coexistence
+### 커스텀 도메인 공존
 
-This fork intentionally installs as `custom_components/naver_weather_custom/` and
-uses the `naver_weather_custom` integration domain. This permits it to coexist with
-the upstream `naver_weather` integration without sharing files or entity identities.
+이 포크는 의도적으로 `custom_components/naver_weather_custom/` 경로에 설치되며,
+`naver_weather_custom` 통합구성요소 도메인을 사용합니다. 이를 통해 파일이나 엔티티
+식별자를 공유하지 않고도 upstream `naver_weather` 통합구성요소와 공존할 수 있습니다.
 
-All entities for one configured area share a 10-minute coordinator refresh. A failed
-refresh marks the entities unavailable rather than presenting stale weather data as
-current. The current/air requests remain one all-or-nothing refresh operation.
+설정된 하나의 지역(area)에 속한 모든 엔티티는 10분 주기의 coordinator 갱신을
+공유합니다. 갱신에 실패하면 오래된 날씨 데이터를 최신인 것처럼 표시하는 대신
+엔티티를 사용 불가(unavailable) 상태로 표시합니다. 현재날씨/대기질 요청은 하나의
+all-or-nothing(전부 성공 또는 전부 실패) 갱신 작업으로 유지됩니다.
 
-Daily, hourly, and forecast-publication timestamps are resolved from Naver's
-displayed labels in Korea Standard Time, including December/January rollover.
-The existing `today` option affects daily and twice-daily forecast presentation
-only: enabled includes the current KST day, while its default omits only that day.
-Hourly rows retain Naver's displayed timestamp `T`. The condition and precipitation
-values on that row describe the preceding interval `(T-1h,T]`, while temperature,
-wind, and humidity remain aligned to the exact `T` row. Short or missing optional
-arrays do not discard otherwise valid rows. Wind speed is retained in native m/s,
-and the current, hourly, and weekly publication times are exposed as ISO-8601 KST
-values (`publicTimeC`, `publicTimeH`, and `publicTimeW`). Forecast payloads use
-Home Assistant's native temperature, wind-speed, and precipitation fields; the
-HA forecast boundary emits UTC RFC-3339 datetime strings.
+일별, 시간별, 예보 발표 타임스탬프는 네이버가 표시하는 라벨을 기준으로 한국표준시
+(KST)로 해석하며, 12월/1월 연도 전환(rollover)도 처리합니다. 기존 `today` 옵션은
+일별 및 하루 두 번(twice-daily) 예보 표시에만 영향을 주며, 활성화하면 현재 KST
+날짜를 포함하고 기본값(비활성화)에서는 그 날짜만 제외합니다. 시간별 행은 네이버가
+표시하는 타임스탬프 `T`를 그대로 유지합니다. 해당 행의 날씨상태와 강수량 값은 직전
+구간 `(T-1h,T]`을 나타내며, 기온·풍속·습도는 정확히 `T` 시점 행에 맞춰집니다.
+선택적 배열이 짧거나 없더라도 그 자체로 유효한 다른 행을 버리지 않습니다. 풍속은
+원본 단위인 m/s로 유지되며, 현재/시간별/주간 발표시간은 ISO-8601 KST 값
+(`publicTimeC`, `publicTimeH`, `publicTimeW`)으로 노출됩니다. 예보 데이터는 Home
+Assistant의 기본 기온·풍속·강수량 필드를 사용하며, HA 예보 경계(boundary)에서는
+UTC RFC-3339 형식의 날짜/시간 문자열로 출력됩니다.
 
 <br>
 
-## Usage
-### Custom Integration
+## 사용법
+### 커스텀 통합구성요소
 - 구성 > 통합구성요소 > 통합구성요소 추가하기 > 네이버 날씨 선택 > 지역(area) 입력후, 확인.
 
 <br>
@@ -187,7 +187,7 @@ area는 기본값으로 '날씨'로 들어갑니다.<br>
 |통합대기       |등급|
 <br>
 
-#### thanks to.
+#### 감사의 말
 - 네이버 HomeAssistant 카페 | 랜이님
 - 네이버 HomeAssistant 카페 | 초후님
 - 네이버 HomeAssistant 카페 | mahlernim님
@@ -203,14 +203,14 @@ area는 기본값으로 '날씨'로 들어갑니다.<br>
 [hakc-shield]: https://img.shields.io/badge/HAKC-Enjoy-blue.svg
 [hacs-shield]: https://img.shields.io/badge/HACS-Custom-red.svg
 
-## Development checks
+## 개발 확인
 
-Use Python 3.14.7, uv 0.12.5 and Node.js 24 for the development environment. The
-hash-locked dependencies include Home Assistant 2026.8.0, Beautiful Soup 4.12.3 and
-Ruff 0.16.4. Pyright 1.1.413 is isolated under `devtools/pyright`; the integration's
-Python 3.11 syntax compatibility remains unchanged. The runtime and development
-Beautiful Soup pins stay aligned at 4.12.3 for compatibility in Home Assistant's
-shared Python environment.
+개발 환경은 Python 3.14.7, uv 0.12.5, Node.js 24를 사용합니다. 해시로 잠긴
+(hash-locked) 의존성에는 Home Assistant 2026.8.0, Beautiful Soup 4.12.3, Ruff
+0.16.4가 포함됩니다. Pyright 1.1.413은 `devtools/pyright` 아래에 격리되어 있으며,
+통합구성요소의 Python 3.11 문법 호환성은 그대로 유지됩니다. 런타임과 개발용
+Beautiful Soup 버전 고정은 Home Assistant의 공유 Python 환경에서의 호환성을 위해
+4.12.3으로 동일하게 맞춰져 있습니다.
 
 ```sh
 python3 -m pip install uv==0.12.5
@@ -224,20 +224,21 @@ devtools/pyright/node_modules/.bin/pyright --project pyrightconfig.json --python
 .venv/bin/python -B -m unittest discover -s tests_ha -p test_parser_dependency.py -v
 ```
 
-Pyright checks all nine integration modules, the two lightweight test modules and
-both real-Home-Assistant regression modules. Run the two test directories in separate
-processes: `tests` installs lightweight module shims, while `tests_ha` uses the actual
-Home Assistant classes with synthetic entries and no running instance or network.
-The real-class regression protects construction against HA's getter-only
-`OptionsFlow.config_entry`, option precedence, the legacy default and submitted values.
-Fresh subprocess parser tests import the actual Home Assistant and Beautiful Soup
-packages and exercise synthetic HTML, active-panel CSS selection, hourly rollover,
-optional values and publication metadata. Their expectations are independent of
-the selected parser version.
+Pyright는 9개의 통합구성요소 모듈과 두 개의 경량 테스트 모듈, 그리고 실제 Home
+Assistant를 사용하는 두 회귀(regression) 테스트 모듈을 모두 검사합니다. 두 테스트
+디렉터리는 서로 다른 프로세스에서 실행하세요: `tests`는 경량 모듈 shim을 설치해
+사용하고, `tests_ha`는 실행 중인 인스턴스나 네트워크 없이 합성(synthetic) 데이터로
+실제 Home Assistant 클래스를 사용합니다. 실제 클래스 기반 회귀 테스트는 HA의
+getter 전용 `OptionsFlow.config_entry`, 옵션 우선순위, 기존 기본값과 제출된 값에
+대한 동작을 보호합니다. 별도 서브프로세스로 실행되는 파서 테스트는 실제 Home
+Assistant와 Beautiful Soup 패키지를 임포트해 합성 HTML, 활성 패널 CSS 선택,
+시간별 롤오버, 선택적 값, 발표 메타데이터를 검증합니다. 이 기대값들은 사용 중인
+파서 버전과 무관하게 성립합니다.
 
-Keep `requirements-dev.in` and its hash-checked `requirements-dev.lock` together when
-intentionally updating development dependencies. These development checks do not
-install the integration into Home Assistant or operate any services or devices.
+개발 의존성을 의도적으로 변경할 때는 `requirements-dev.in`과 해시로 검증되는
+`requirements-dev.lock`을 항상 함께 갱신하세요. 이 개발 확인 과정은 Home
+Assistant에 통합구성요소를 설치하거나 어떤 서비스·장치도 실제로 동작시키지
+않습니다.
 
 
 ## Home Assistant 2026.9 호환성 검증
