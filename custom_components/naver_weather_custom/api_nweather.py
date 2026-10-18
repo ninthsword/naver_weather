@@ -703,7 +703,7 @@ class NWeatherAPI:
             else:
                 val = None
 
-            return val;
+            return val
         except (AttributeError, KeyError, TypeError, ValueError) as e:
             _LOGGER.error( f"[{BRAND}] _bs4_select_one Error {tag} : {e}" )
 
