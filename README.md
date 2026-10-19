@@ -311,3 +311,33 @@ devtools/pyright/node_modules/.bin/pyright --project pyrightconfig.json --python
 devtools/pyright/node_modules/.bin/pyright --project pyrightconfig.json --pythonpath .venv-ha2026.10/bin/python devtools/ha2026_10_typing.py devtools/test_ha2026_10_typing.py
 .venv-ha2026.10/bin/ruff check --no-cache devtools/ha2026_10_typing.py devtools/test_ha2026_10_typing.py
 ```
+
+## 화면 검증
+
+`devtools/ui_check/check.py`는 실제 Home Assistant 2026.10을 Home Assistant 자체
+화면 그대로, 네이버 날씨 대신 합성 날씨 데이터로 실행합니다. 브라우저로 로그인한 뒤
+구성 흐름으로 통합구성요소를 추가하고, 한국어 문구와 기기 및 센서, 옵션 화면을
+확인하며, 기기 페이지를 데스크톱과 휴대폰 너비로 열어 각 화면의 스크린샷을
+저장합니다.
+
+이 검증은 네이버, 운영 중인 Home Assistant, 장치에 연결하지 않으며 네트워크가
+필요하지 않습니다. 다만 네트워크가 있으면 새로 설치한 Home Assistant와 마찬가지로
+온보딩 과정에서 기본 통합구성요소인 met, radio_browser, google_translate가 시작되고
+브라우저가 Home Assistant의 브랜드 이미지를 불러오므로 인터넷에 접속할 수 있습니다.
+
+`requirements-ui.lock`으로 `.venv-ui`를 만들고 Chromium을 설치한 뒤, 실행할 때마다
+`mktemp -d`로 새 디렉터리를 만들어 지정하세요. 이미 파일이 있는 디렉터리는 거부되므로
+고정된 경로는 두 번째 실행에서 실패합니다. 스크린샷과 Home Assistant 로그가 그
+디렉터리 아래에 저장됩니다.
+
+```sh
+python -m pip install uv==0.12.5
+uv venv --python 3.14.7 .venv-ui
+uv pip sync --python .venv-ui/bin/python --require-hashes requirements-ui.lock
+.venv-ui/bin/python -m playwright install --with-deps chromium
+out=$(mktemp -d /tmp/naver-ui-check.XXXXXX)
+.venv-ui/bin/python -B devtools/ui_check/check.py --out "$out/shots"
+```
+
+CI는 `.github/workflows/ui-check.yml`에서 같은 검증을 실행하고, 스크린샷과 로그를
+7일 동안 보관합니다.
