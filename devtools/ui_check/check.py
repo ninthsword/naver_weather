@@ -48,9 +48,10 @@ recorder:
 """
 # A record's header line in HA's console format (homeassistant/bootstrap.py):
 # "%(asctime)s.%(msecs)03d %(levelname)s (%(threadName)s) [%(name)s] %(message)s", datefmt
-# "%Y-%m-%d %H:%M:%S". Every following line up to the next header line belongs to the record.
+# "%Y-%m-%d %H:%M:%S". Every following line up to the next header line belongs to the record. A thread
+# name may hold parentheses (Python names unnamed threads "Thread-3 (_run)").
 RECORD = re.compile(
-    r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3} (?P<level>[A-Z]+) \([^)]*\) \[[^\]]*\]( |$)"
+    r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3} (?P<level>[A-Z]+) \(.*?\) \[[^\]]*\]( |$)"
 )
 # A traceback frame as Python's traceback module formats it: "  File "...", line N, in f", and the
 # same line behind the "|" margins it adds for the sub-exceptions of an ExceptionGroup.

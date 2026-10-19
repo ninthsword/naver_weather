@@ -8,6 +8,7 @@ import logging
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import traceback
 import types
@@ -56,8 +57,11 @@ HA_FORMAT = "%(asctime)s.%(msecs)03d %(levelname)s (%(threadName)s) [%(name)s] %
 HA_DATEFMT = "%Y-%m-%d %H:%M:%S"
 
 
-def logged(logger_name: str, level: int, message: str) -> list[str]:
-    """The lines Python's logging module writes for one record through HA's formatter."""
+def logged(logger_name: str, level: int, message: str, thread_name: str | None = None) -> list[str]:
+    """The lines Python's logging module writes for one record through HA's formatter.
+
+    With `thread_name`, the record is logged from a thread of that name.
+    """
     stream = io.StringIO()
     handler = logging.StreamHandler(stream)
     handler.setFormatter(logging.Formatter(HA_FORMAT, datefmt=HA_DATEFMT))
@@ -67,7 +71,12 @@ def logged(logger_name: str, level: int, message: str) -> list[str]:
     logger.setLevel(logging.DEBUG)
     logger.propagate = False
     try:
-        logger.log(level, message)
+        if thread_name is None:
+            logger.log(level, message)
+        else:
+            thread = threading.Thread(target=logger.log, args=(level, message), name=thread_name)
+            thread.start()
+            thread.join()
     finally:
         logger.removeHandler(handler)
         logger.level, logger.propagate = saved
@@ -149,6 +158,13 @@ class ScanLogTest(unittest.TestCase):
 
     def test_reports_multiline_critical_naming_domain_on_continuation(self) -> None:
         self.assert_found_only_through_continuation(logging.CRITICAL)
+
+    def test_reports_error_logged_from_a_thread_named_with_parentheses(self) -> None:
+        lines = logged("homeassistant.setup", logging.ERROR, MULTILINE_MESSAGE, "Thread-3 (_run)")
+        self.assertEqual(len(lines), 2)
+        self.assertIn("(Thread-3 (_run))", lines[0])
+        self.assertIsNotNone(check.RECORD.match(lines[0]))
+        self.assertEqual(check.scan_log(lines), ["\n".join(lines)])
 
     def test_ignores_multiline_warning_naming_domain_on_continuation(self) -> None:
         lines = logged("homeassistant.setup", logging.WARNING, MULTILINE_MESSAGE)
