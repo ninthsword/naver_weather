@@ -78,8 +78,8 @@ class NWeatherDevice(CoordinatorEntity[NWeatherDataUpdateCoordinator], NWeatherB
 
     @property
     def available(self) -> bool:
-        """Expose coordinator refresh failures instead of stale data."""
-        return self.coordinator.last_update_success
+        """Keep the last good data for a bounded time when refreshes fail."""
+        return self.coordinator.last_update_success or self.coordinator.has_recent_data
 
     # HA declares a cached descriptor; retain this integration's property semantics.
     @property
