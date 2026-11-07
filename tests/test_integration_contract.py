@@ -10,7 +10,7 @@ import unittest
 from datetime import datetime
 from itertools import pairwise
 from pathlib import Path
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 REPOSITORY = Path(__file__).resolve().parents[1]
 INTEGRATION = REPOSITORY / "custom_components" / "naver_weather_custom"
@@ -134,6 +134,10 @@ def install_home_assistant_shims() -> None:
             self.config_entry = config_entry
             self.data = None
             self.last_update_success = False
+            self.listener_updates = 0
+
+        def async_update_listeners(self):
+            self.listener_updates += 1
 
         async def async_config_entry_first_refresh(self):
             try:
@@ -411,6 +415,34 @@ class IntegrationContractTest(unittest.TestCase):
         asyncio.run(coordinator.async_request_refresh())
         self.assertFalse(coordinator.last_update_success)
 
+    def test_failed_refreshes_keep_last_good_data_for_one_hour(self):
+        entry = FakeEntry()
+        api = api_module.NWeatherAPI(FakeHass(), entry, 1)
+        fail = False
+
+        async def update():
+            if fail:
+                raise RuntimeError("fixture refresh failure")
+            api.result = {"NowTemp": "22"}
+
+        api.update = update
+        coordinator = coordinator_module.NWeatherDataUpdateCoordinator(
+            FakeHass(), api, entry
+        )
+        self.assertFalse(coordinator.has_recent_data)
+        with patch.object(coordinator_module, "monotonic", return_value=1000.0):
+            asyncio.run(coordinator.async_config_entry_first_refresh())
+        fail = True
+        for now, recent in ((1000.0 + 3599, True), (1000.0 + 3600, False)):
+            with self.subTest(age=now - 1000.0), patch.object(
+                coordinator_module, "monotonic", return_value=now
+            ):
+                asyncio.run(coordinator.async_request_refresh())
+                self.assertFalse(coordinator.last_update_success)
+                self.assertEqual(coordinator.data, {"NowTemp": "22"})
+                self.assertIs(coordinator.has_recent_data, recent)
+                self.assertEqual(coordinator.listener_updates, 0 if recent else 1)
+
     def test_unload_platforms_success_cleans_up_and_false_preserves_state(self):
         entry = types.SimpleNamespace(entry_id="entry")
 
@@ -476,7 +508,9 @@ class IntegrationContractTest(unittest.TestCase):
             pass
 
         api = api_module.NWeatherAPI(FakeHass(), FakeEntry("서울"), 1)
-        coordinator = types.SimpleNamespace(last_update_success=True)
+        coordinator = types.SimpleNamespace(
+            last_update_success=True, has_recent_data=False
+        )
         device = ConcreteDevice(["Metric", "측정값", "", ""], api, coordinator)
 
         self.assertIs(device.api, api)
@@ -491,6 +525,9 @@ class IntegrationContractTest(unittest.TestCase):
 
         coordinator.last_update_success = False
         self.assertFalse(device.available)
+
+        coordinator.has_recent_data = True
+        self.assertTrue(device.available)
 
     def test_first_refresh_failure_remains_an_error(self):
         entry = FakeEntry()
