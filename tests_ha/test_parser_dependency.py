@@ -262,6 +262,69 @@ class ParserDependencyTest(unittest.TestCase):
             asyncio.run(check())
         """)
 
+    def test_air_request_follows_only_the_naver_search_link(self) -> None:
+        self._run_update("""
+            from yarl import URL
+
+            def card(title, href):
+                anchor = f'<a href="{escape(href)}">x</a>' if href is not None else ''
+                return (
+                    '<div class="report_card_wrap"><ul class="today_chart_list">'
+                    f'<li class="item_today"><strong class="title">{title}</strong>{anchor}</li>'
+                    '</ul></div>'
+                )
+
+            async def air_url(client, markup):
+                responses = [Mock(), Mock()]
+                responses[0].text = AsyncMock(return_value=weather_markup() + markup)
+                responses[1].text = AsyncMock(return_value="")
+                session = Mock(get=AsyncMock(side_effect=responses))
+                with patch.object(api, "async_get_clientsession", return_value=session):
+                    await client.update()
+                return session.get.await_args_list[1].args[0]
+
+            async def check():
+                local = "https://search.naver.com/search.naver?where=nexearch&query=local"
+                default = api.BSE_URL.format("Synthetic 미세먼지")
+                cases = [
+                    (card("미세먼지", "?where=nexearch&query=local"), local),
+                    (card("미세먼지", local), local),
+                    ("", default),
+                    (card("초미세먼지", local), default),
+                    (card("미세먼지", None), default),
+                    (card("미세먼지", "https://example.invalid/air"), default),
+                    (card("미세먼지", "http://search.naver.com/air"), default),
+                    (card("미세먼지", "//example.invalid/air"), default),
+                    (card("미세먼지", "https://[bad/air"), default),
+                    (card("미세먼지", "https://search.naver.com:abc/air"), default),
+                    (card("미세먼지", "https://search.naver.com:99999/air"), default),
+                    (card("미세먼지", "https://search.naver.com:8443/air"), default),
+                    (card("미세먼지", "https://user:pw@search.naver.com/air"), default),
+                    (card("미세먼지", ""), default),
+                    (card("미세먼지", "#top"), default),
+                ]
+                with TemporaryDirectory() as directory:
+                    client, _ = make_entities(directory)
+                    for markup, expected in cases:
+                        actual = await air_url(client, markup)
+                        assert actual == expected, (markup, actual)
+                        URL(actual)
+            asyncio.run(check())
+        """)
+
+    def test_summary_numbers_accept_optional_colon_and_spacing(self) -> None:
+        self._run_parser("""
+            for text, feel, humidity in (
+                ("체감 -3.5 습도 60", "-3.5", "60"),
+                ("체감: -3.5 습도: 60", "-3.5", "60"),
+                ("체감-3.5 습도60", "-3.5", "60"),
+                ("바람 2m/s", None, None),
+            ):
+                assert api.re2key("체감", text) == feel, text
+                assert api.re2key("습도", text) == humidity, text
+            assert api.re2key("습도", None) is None
+        """)
+
     def test_sensor_preserves_numeric_text_and_unknown_values(self) -> None:
         self._run_update("""
             async def check():
