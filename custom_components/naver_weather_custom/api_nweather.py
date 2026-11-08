@@ -5,6 +5,7 @@ import re
 from collections.abc import Iterable, Sequence
 from datetime import datetime, timedelta, timezone
 from typing import Literal, Protocol, overload
+from urllib.parse import urldefrag, urljoin, urlsplit
 
 from aiohttp import ClientTimeout
 from bs4.element import Tag
@@ -156,6 +157,9 @@ PUBLICATION_LABEL_PATTERN = re.compile(
     r"(?P<body>.*?)(?=(?:현재 및 1시간예보|시간별예보|주간예보)|$)",
     re.DOTALL,
 )
+AIR_LINK_ITEM_SELECTOR = "div.report_card_wrap > ul.today_chart_list > li.item_today"
+AIR_LINK_TITLE = "미세먼지"
+AIR_LINK_HOST = "search.naver.com"
 HOURLY_ROW_SELECTOR = "div.graph_inner._hourly_weather li._li"
 HOURLY_RAIN_PERCENT_SELECTOR = (
     "div._hourly_rain div.climate_box div.icon_wrap ul li.data em.value"
@@ -558,13 +562,8 @@ def re2key(key,val):
     if val is None:
         return None
         
-    r = re.compile(f"{key} -?\\d+\\.?\\d?")
-    rtn = r.findall(val)
-
-    if len(rtn) > 0:
-        return rtn[0]
-    else:
-        return None
+    match = re.search(rf"{key}\s*:?\s*(-?\d+\.?\d?)", val)
+    return match.group(1) if match else None
 
 def re2keyW(val):
     if val is None:
@@ -708,6 +707,35 @@ class NWeatherAPI:
             _LOGGER.error( f"[{BRAND}] _bs4_select_one Error {tag} : {e}" )
 
     
+    def _local_air_url(self, soup: HtmlNode, weather_url: str) -> str | None:
+        """Return the weather page's local air-quality link if it stays on Naver search."""
+        for item in _select_nodes(soup, AIR_LINK_ITEM_SELECTOR):
+            if self._bs4_select_one(item, "strong.title") != AIR_LINK_TITLE:
+                continue
+            link = self._bs4_select_one(item, "a[href]", False)
+            get = getattr(link, "get", None)
+            href = get("href") if callable(get) else None
+            if not isinstance(href, str):
+                return None
+            try:
+                target = urljoin(weather_url, href)
+                parts = urlsplit(target)
+                host = parts.hostname
+                port = parts.port
+            except ValueError:
+                return None
+            if (
+                parts.scheme != "https"
+                or host != AIR_LINK_HOST
+                or port is not None
+                or parts.username is not None
+                or parts.password is not None
+                or urldefrag(target).url == weather_url
+            ):
+                return None
+            return target
+        return None
+
     async def update(self):
         """Update function for updating api information."""
         try:
@@ -737,6 +765,8 @@ class NWeatherAPI:
             soup = BeautifulSoup(await response.text(), "html.parser")
 
             #미세먼지
+            # A query of only the area and "미세먼지" often returns no local values.
+            url_air = self._local_air_url(soup, url) or url_air
             air = await session.get(url_air, headers=hdr, timeout=ClientTimeout(total=30))
             air.raise_for_status()
 
