@@ -3,9 +3,10 @@
   "name": "Naver Weather Custom",
   "config_flow": true,
   "documentation": "https://github.com/ninthsword/naver_weather",
+  "issue_tracker": "https://github.com/ninthsword/naver_weather/issues",
   "requirements": ["beautifulsoup4==4.12.3"],
   "dependencies": [],
   "codeowners": ["@miumida", "@gugu927", "@ninthsword"],
-  "version": "2.5.3-0.3",
+  "version": "2.5.3-0.4",
   "iot_class": "cloud_polling"
 }
