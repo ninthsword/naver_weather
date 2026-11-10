@@ -341,3 +341,8 @@ out=$(mktemp -d /tmp/naver-ui-check.XXXXXX)
 
 CI는 `.github/workflows/ui-check.yml`에서 같은 검증을 실행하고, 스크린샷과 로그를
 7일 동안 보관합니다.
+
+## 개발용 동작 지도
+
+[핵심 동작 지도](docs/behavior-map.md)에서 기능별 코드·테스트와 확인 범위를 찾을 수 있습니다.
+지도는 배포 상태나 실제 장치·서비스의 정상 동작을 보장하지 않습니다.
