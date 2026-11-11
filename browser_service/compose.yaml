@@ -1,0 +1,8 @@
+services:
+  browser:
+    build: .
+    restart: unless-stopped
+    init: true
+    shm_size: 1gb
+    ports:
+      - "8765:8765"

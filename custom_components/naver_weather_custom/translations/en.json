@@ -24,9 +24,13 @@
             "init": {
                 "title": "Naver Weather Options.",
                 "data": {
-                    "today": "Today: Weekly forecast includes today's weather."
+                    "today": "Today: Weekly forecast includes today's weather.",
+                    "browser_url": "Browser service address (optional; leave empty for direct requests)"
                 }
             }
+        },
+        "error": {
+            "invalid_browser_url": "Enter an HTTP or HTTPS service address without a path, credentials, query or fragment."
         }
     }
 }
