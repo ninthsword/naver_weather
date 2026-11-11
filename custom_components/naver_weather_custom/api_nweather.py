@@ -10,6 +10,7 @@ from urllib.parse import urldefrag, urljoin, urlsplit
 from aiohttp import ClientTimeout
 from bs4.element import Tag
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.util.ssl import client_context
 
 from .bs4_compat import BeautifulSoup
 from .const import (
@@ -758,8 +759,11 @@ class NWeatherAPI:
             }
 
             session = async_get_clientsession(self.hass)
+            # Naver refuses requests whose TLS hello offers only the http/1.1 ALPN that
+            # Home Assistant's shared session sends; this preloaded context offers none.
+            tls = client_context()
 
-            response = await session.get(url, headers=hdr, timeout=ClientTimeout(total=30))
+            response = await session.get(url, headers=hdr, ssl=tls, timeout=ClientTimeout(total=30))
             response.raise_for_status()
 
             soup = BeautifulSoup(await response.text(), "html.parser")
@@ -767,7 +771,7 @@ class NWeatherAPI:
             #미세먼지
             # A query of only the area and "미세먼지" often returns no local values.
             url_air = self._local_air_url(soup, url) or url_air
-            air = await session.get(url_air, headers=hdr, timeout=ClientTimeout(total=30))
+            air = await session.get(url_air, headers=hdr, ssl=tls, timeout=ClientTimeout(total=30))
             air.raise_for_status()
 
             bs4air = BeautifulSoup(await air.text(), "html.parser")
