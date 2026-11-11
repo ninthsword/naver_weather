@@ -95,8 +95,14 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         """Edit the today preference and validate the optional service address."""
         errors: dict[str, str] = {}
         if user_input is not None:
-            options = dict(user_input)
-            browser_url = str(options.pop(CONF_BROWSER_URL, "")).strip()
+            # Keep options this form does not show, such as a legacy area, so saving
+            # never changes which area the entry reads.
+            options = {
+                key: value for key, value in self._entry.options.items() if key != CONF_BROWSER_URL
+            }
+            submitted = dict(user_input)
+            browser_url = str(submitted.pop(CONF_BROWSER_URL, "")).strip()
+            options.update(submitted)
             if browser_url:
                 try:
                     parts = urlsplit(browser_url)
