@@ -90,6 +90,28 @@ class OptionsFlowTest(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(result.get("data"), {CONF_TODAY: False})
                 self.assertEqual(dict(config_entry.options), {CONF_BROWSER_URL: "http://browser.invalid:8765"})
 
+    async def test_saving_keeps_options_the_form_does_not_show(self) -> None:
+        config_entry = entry(
+            {CONF_AREA: "Synthetic", CONF_TODAY: True},
+            {CONF_AREA: "Legacy synthetic", CONF_BROWSER_URL: "http://old.example:8765"},
+        )
+        cases = [
+            ({CONF_TODAY: False}, {CONF_AREA: "Legacy synthetic", CONF_TODAY: False}),
+            (
+                {CONF_TODAY: True, CONF_BROWSER_URL: "http://new.example:8765/"},
+                {CONF_AREA: "Legacy synthetic", CONF_TODAY: True, CONF_BROWSER_URL: "http://new.example:8765"},
+            ),
+        ]
+        for submitted, expected in cases:
+            with self.subTest(submitted=submitted):
+                result = await OptionsFlowHandler(config_entry).async_step_init(dict(submitted))
+                self.assertEqual(result.get("type"), FlowResultType.CREATE_ENTRY)
+                self.assertEqual(result.get("data"), expected)
+        self.assertEqual(
+            dict(config_entry.options),
+            {CONF_AREA: "Legacy synthetic", CONF_BROWSER_URL: "http://old.example:8765"},
+        )
+
     async def test_http_and_https_origins_are_trimmed_and_saved(self) -> None:
         for address, expected in (
             ("http://browser.invalid:8765", "http://browser.invalid:8765"),

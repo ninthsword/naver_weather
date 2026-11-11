@@ -1,6 +1,6 @@
 원작: [miumi](https://github.com/miumida/naver_weather)
 
-v2.5.3-0.7
+v2.5.3-0.8
 
 # 네이버 날씨 for HA
 
