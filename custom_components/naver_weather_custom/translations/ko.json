@@ -24,9 +24,13 @@
             "init": {
                 "title": "\uB124\uC774\uBC84 \uB0A0\uC528 \uC0AC\uC6A9\uC790\uC124\uC815.",
                 "data": {
-                    "today": "\uC8FC\uAC04\uC608\uBCF4\uC5D0 \uC624\uB298\uB0A0\uC528 \uD3EC\uD568"
+                    "today": "\uC8FC\uAC04\uC608\uBCF4\uC5D0 \uC624\uB298\uB0A0\uC528 \uD3EC\uD568",
+                    "browser_url": "브라우저 서비스 주소 (선택 사항, 비워 두면 직접 요청)"
                 }
             }
+        },
+        "error": {
+            "invalid_browser_url": "경로, 사용자 정보, 쿼리, 프래그먼트가 없는 HTTP 또는 HTTPS 서비스 주소를 입력하세요."
         }
     }
 }

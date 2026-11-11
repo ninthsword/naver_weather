@@ -10,7 +10,7 @@ import unittest
 from datetime import datetime
 from itertools import pairwise
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 REPOSITORY = Path(__file__).resolve().parents[1]
 INTEGRATION = REPOSITORY / "custom_components" / "naver_weather_custom"
@@ -29,9 +29,6 @@ def _set_attributes(module: types.ModuleType, **attributes: object) -> None:
         setattr(module, name, value)
 
 
-NO_ALPN_CONTEXT = object()
-
-
 def install_home_assistant_shims() -> None:
     """Install the small Home Assistant surface needed by these unit tests."""
     aiohttp = _module("aiohttp")
@@ -40,7 +37,10 @@ def install_home_assistant_shims() -> None:
         def __init__(self, *, total):
             self.total = total
 
-    _set_attributes(aiohttp, ClientTimeout=ClientTimeout)
+    class ClientError(Exception):
+        pass
+
+    _set_attributes(aiohttp, ClientTimeout=ClientTimeout, ClientError=ClientError)
     bs4 = _module("bs4")
     _set_attributes(bs4, __path__=[])
     _set_attributes(bs4, BeautifulSoup=object)
@@ -50,9 +50,11 @@ def install_home_assistant_shims() -> None:
 
     class OptionalKey(str):
         default: object
-        def __new__(cls, value, default=None):
+        description: object
+        def __new__(cls, value, default=None, description=None):
             key = super().__new__(cls, value)
             key.default = default
+            key.description = description
             return key
 
     voluptuous = _module("voluptuous")
@@ -71,8 +73,6 @@ def install_home_assistant_shims() -> None:
     update_coordinator = _module("homeassistant.helpers.update_coordinator")
     storage = _module("homeassistant.helpers.storage")
     exceptions = _module("homeassistant.exceptions")
-    util = _module("homeassistant.util")
-    util_ssl = _module("homeassistant.util.ssl")
     components = _module("homeassistant.components")
     sensor = _module("homeassistant.components.sensor")
     weather = _module("homeassistant.components.weather")
@@ -86,8 +86,7 @@ def install_home_assistant_shims() -> None:
     _set_attributes(helpers, config_validation=config_validation)
     _set_attributes(helpers, aiohttp_client=aiohttp_client)
     _set_attributes(helpers, storage=storage)
-    _set_attributes(homeassistant, exceptions=exceptions, util=util)
-    _set_attributes(util, ssl=util_ssl)
+    _set_attributes(homeassistant, exceptions=exceptions)
     _set_attributes(helpers, update_coordinator=update_coordinator)
     _set_attributes(components, sensor=sensor)
     _set_attributes(components, weather=weather)
@@ -192,7 +191,6 @@ def install_home_assistant_shims() -> None:
     _set_attributes(config_entries, ConfigFlowResult=dict)
     _set_attributes(config_entries, ConfigEntryNotReady=ConfigEntryNotReady)
     _set_attributes(exceptions, ConfigEntryNotReady=ConfigEntryNotReady)
-    _set_attributes(util_ssl, client_context=lambda: NO_ALPN_CONTEXT)
 
     class Store:
         @classmethod
@@ -663,11 +661,12 @@ class IntegrationContractTest(unittest.TestCase):
                 self.assertEqual(api.result, {})
                 self.assertFalse(coordinator.has_recent_data)
 
-    def test_naver_requests_use_the_context_without_alpn(self):
+    def test_direct_naver_requests_use_the_shared_session_defaults(self):
         source = (INTEGRATION / "api_nweather.py").read_text(encoding="utf-8")
-        self.assertEqual(source.count("ssl=tls"), 2)
-        self.assertEqual(source.count("session.get("), 2)
-        self.assertIn("tls = client_context()", source)
+        self.assertNotIn("client_context", source)
+        self.assertNotIn("ssl=", source)
+        self.assertEqual(source.count("session.get(url, headers=hdr, timeout="), 1)
+        self.assertEqual(source.count("session.get(url_air, headers=hdr, timeout="), 1)
 
     def test_platforms_share_coordinator_and_never_poll_independently(self):
         init_source = (INTEGRATION / "__init__.py").read_text(encoding="utf-8")
@@ -709,7 +708,8 @@ class IntegrationContractTest(unittest.TestCase):
         self.assertNotIn("vol.Optional(CONF_AREA", source.split("class OptionsFlowHandler", 1)[1])
         options = config_flow_module.OptionsFlowHandler(FakeEntry("서울", today=True))
         result = asyncio.run(options.async_step_init())
-        self.assertEqual(result["data_schema"], {"today": bool})
+        self.assertEqual(list(result["data_schema"]), ["today", "browser_url"])
+        self.assertEqual(result["data_schema"], {"today": bool, "browser_url": str})
         self.assertTrue(next(iter(result["data_schema"])).default)
         saved = asyncio.run(options.async_step_init({"today": False}))
         self.assertEqual(saved["data"], {"today": False})
@@ -720,8 +720,81 @@ class IntegrationContractTest(unittest.TestCase):
                 translations = json.loads((INTEGRATION / name).read_text(encoding="utf-8"))
                 self.assertIn("area", translations["config"]["step"]["user"]["data"])
                 self.assertEqual(
-                    set(translations["options"]["step"]["init"]["data"]), {"today"}
+                    set(translations["options"]["step"]["init"]["data"]), {"today", "browser_url"}
                 )
+
+    def test_browser_option_translations_include_errors_and_korean_text(self):
+        for name in ("strings.json", "translations/en.json", "translations/ko.json"):
+            with self.subTest(name=name):
+                options = json.loads((INTEGRATION / name).read_text(encoding="utf-8"))["options"]
+                label = options["step"]["init"]["data"]["browser_url"]
+                error = options["error"]["invalid_browser_url"]
+                self.assertTrue(label)
+                self.assertTrue(error)
+                if name == "translations/ko.json":
+                    self.assertTrue(any("가" <= char <= "힣" for char in label))
+                    self.assertTrue(any("가" <= char <= "힣" for char in error))
+                    self.assertIn("선택", label)
+                    self.assertIn("직접 요청", label)
+
+    def test_browser_address_is_read_from_current_options(self):
+        entry = FakeEntry()
+        api = api_module.NWeatherAPI(FakeHass(), entry, 1)
+        self.assertEqual(api.browser_url, "")
+        for address in ("http://browser.invalid:8765", "https://browser.invalid"):
+            entry.options["browser_url"] = address
+            self.assertEqual(api.browser_url, address)
+        entry.options.pop("browser_url")
+        self.assertEqual(api.browser_url, "")
+
+    def test_browser_helper_success_failure_cleanup_and_private_logs(self):
+        entry = FakeEntry()
+        entry.options["browser_url"] = "http://browser.invalid:8765"
+        api = api_module.NWeatherAPI(FakeHass(), entry, 1)
+        url = "https://search.naver.com/search.naver?query=private-area"
+        response = Mock(status=200, text=AsyncMock(return_value="<html>weather</html>"))
+        session = Mock(get=AsyncMock(return_value=response))
+        self.assertEqual(asyncio.run(api._browser_page(session, url)), "<html>weather</html>")
+        call = session.get.await_args
+        assert call is not None
+        self.assertEqual(call.args, (entry.options["browser_url"] + "/render",))
+        self.assertEqual(call.kwargs["params"], {"url": url})
+        self.assertEqual(call.kwargs["timeout"].total, 60)
+        response.release.assert_called_once_with()
+        for failure in (502, api_module.ClientError(url), TimeoutError(url)):
+            with self.subTest(failure=type(failure).__name__):
+                response.reset_mock()
+                session.get.side_effect = failure if isinstance(failure, Exception) else None
+                response.status = failure if isinstance(failure, int) else 200
+                with self.assertLogs(api_module._LOGGER, level="DEBUG") as captured:
+                    self.assertIsNone(asyncio.run(api._browser_page(session, url)))
+                self.assertNotIn("private-area", " ".join(captured.output))
+                self.assertNotIn(url, " ".join(captured.output))
+                if isinstance(failure, int):
+                    response.release.assert_called_once_with()
+
+    def test_browser_options_drop_blanks_and_validate_service_origins(self):
+        for address, expected in (
+            ("", None), (" \t ", None),
+            ("http://browser.invalid:8765/", "http://browser.invalid:8765"),
+            (" https://browser.invalid/ ", "https://browser.invalid"),
+            ("ftp://browser.invalid", False), ("http:///missing", False),
+            ("http://user:pw@browser.invalid", False),
+            ("https://browser.invalid/render", False),
+            ("https://browser.invalid?query=area", False),
+            ("https://browser.invalid#fragment", False),
+            ("http://browser.invalid:bad", False),
+            ("http://browser.invalid:99999", False),
+        ):
+            with self.subTest(address=address):
+                flow = config_flow_module.OptionsFlowHandler(FakeEntry())
+                result = asyncio.run(flow.async_step_init({"today": False, "browser_url": address}))
+                if expected is False:
+                    self.assertEqual(result["type"], "form")
+                    self.assertEqual(result["errors"], {"browser_url": "invalid_browser_url"})
+                else:
+                    self.assertEqual(result["type"], "create_entry")
+                    self.assertEqual(result["data"], {"today": False, **({"browser_url": expected} if expected else {})})
 
     def test_legacy_today_default_and_explicit_values_are_preserved(self):
         legacy = api_module.NWeatherAPI(FakeHass(), FakeEntry(), 1)

@@ -15,7 +15,6 @@ from html import escape
 from pathlib import Path
 
 import homeassistant.helpers.aiohttp_client as ha_client
-import homeassistant.util.ssl as ssl_util
 from bs4 import BeautifulSoup
 from bs4.element import Tag
 from custom_components.naver_weather_custom import api_nweather as api
@@ -170,11 +169,7 @@ async def update_from_markup(client, weather, air):
     assert session.get.await_count == 2
     for response in responses:
         response.raise_for_status.assert_called_once_with()
-    no_alpn = ssl_util.client_context()
-    assert no_alpn is not ssl_util.client_context(
-        ssl_util.SSLCipherList.PYTHON_DEFAULT, ssl_util.SSL_ALPN_HTTP11
-    )
-    assert [call.kwargs["ssl"] for call in session.get.await_args_list] == [no_alpn, no_alpn]
+    assert all("ssl" not in call.kwargs for call in session.get.await_args_list)
 
 
 def make_entities(directory):
@@ -193,6 +188,26 @@ def make_entities(directory):
     }
     assert all(isinstance(entity, CoordinatorEntity) for entity in entities.values())
     return client, entities
+"""
+
+
+BROWSER_SETUP = """
+SERVICE = "http://browser.invalid:8765"
+
+
+def browser_client(directory):
+    hass = HomeAssistant(directory)
+    entry = ConfigEntry(
+        version=1, minor_version=1, domain=DOMAIN, title="Synthetic weather",
+        data={"area": "Synthetic"}, options={"browser_url": SERVICE}, source="user",
+        unique_id="synthetic-browser-weather", discovery_keys=MappingProxyType({}),
+        subentries_data=None,
+    )
+    return api.NWeatherAPI(hass, entry, 1)
+
+
+def browser_reply(markup, status=200):
+    return Mock(status=status, text=AsyncMock(return_value=markup))
 """
 
 
@@ -215,6 +230,115 @@ class ParserDependencyTest(unittest.TestCase):
 
     def _run_update(self, script: str) -> None:
         self._run_parser(UPDATE_SETUP + dedent(script))
+
+    def test_browser_service_fetches_weather_and_selected_air_page(self) -> None:
+        self._run_update(BROWSER_SETUP + dedent("""
+            async def check():
+                weather_url = api.BSE_URL.format("Synthetic 날씨")
+                local_air_url = "https://search.naver.com/search.naver?query=local-air"
+                weather = browser_reply(
+                    weather_markup()
+                    + '<div class="report_card_wrap"><ul class="today_chart_list">'
+                    '<li class="item_today"><strong class="title">미세먼지</strong>'
+                    f'<a href="{local_air_url}">대기질</a></li></ul></div>'
+                )
+                air = browser_reply(air_markup("12", "6"))
+                session = Mock(get=AsyncMock(side_effect=[weather, air]))
+                with TemporaryDirectory() as directory:
+                    client = browser_client(directory)
+                    with patch.object(api, "async_get_clientsession", return_value=session):
+                        await client.update()
+                    calls = session.get.await_args_list
+                    assert len(calls) == 2, calls
+                    assert [call.args for call in calls] == [(SERVICE + "/render",)] * 2
+                    assert [call.kwargs["params"] for call in calls] == [
+                        {"url": weather_url}, {"url": local_air_url},
+                    ]
+                    assert all(call.kwargs["timeout"].total == 60 for call in calls)
+                    assert all("ssl" not in call.kwargs for call in calls)
+                    for response in (weather, air):
+                        response.raise_for_status.assert_not_called()
+                        response.release.assert_called_once_with()
+                    assert float(client.result[NOW_TEMP[0]]) == -2.5
+                    assert float(client.result[NDUST[0]]) == 12
+                    assert float(client.result[UDUST[0]]) == 6
+            asyncio.run(check())
+        """))
+
+    def test_browser_service_failure_falls_back_only_for_that_page(self) -> None:
+        self._run_update(BROWSER_SETUP + dedent("""
+            async def check():
+                weather_url = api.BSE_URL.format("Synthetic 날씨")
+                air_url = weather_url.replace("날씨", "미세먼지")
+                for failed_page in (0, 1):
+                    for failure_kind in ("client", "timeout", "status"):
+                        weather = browser_reply(weather_markup())
+                        air = browser_reply(air_markup("12", "6"))
+                        failure = (
+                            api.ClientError("private-area") if failure_kind == "client"
+                            else TimeoutError("private-area") if failure_kind == "timeout"
+                            else browser_reply("private-area", status=502)
+                        )
+                        replies = [failure, weather, air] if failed_page == 0 else [weather, failure, air]
+                        session = Mock(get=AsyncMock(side_effect=replies))
+                        with TemporaryDirectory() as directory:
+                            client = browser_client(directory)
+                            with patch.object(api, "async_get_clientsession", return_value=session):
+                                await client.update()
+                            calls = session.get.await_args_list
+                            expected = (
+                                [SERVICE + "/render", weather_url, SERVICE + "/render"]
+                                if failed_page == 0 else [SERVICE + "/render", SERVICE + "/render", air_url]
+                            )
+                            assert [call.args[0] for call in calls] == expected, calls
+                            direct_index = 1 if failed_page == 0 else 2
+                            direct = calls[direct_index]
+                            assert "ssl" not in direct.kwargs
+                            assert direct.kwargs["timeout"].total == 30
+                            assert "headers" in direct.kwargs and "params" not in direct.kwargs
+                            (weather if failed_page == 0 else air).raise_for_status.assert_called_once_with()
+                            for index, call in enumerate(calls):
+                                if index != direct_index:
+                                    assert call.kwargs["timeout"].total == 60
+                                    assert "ssl" not in call.kwargs
+                            assert float(client.result[NOW_TEMP[0]]) == -2.5
+                            assert float(client.result[NDUST[0]]) == 12
+                            assert float(client.result[UDUST[0]]) == 6
+            asyncio.run(check())
+        """))
+
+    def test_failed_direct_fallback_preserves_the_previous_complete_payload(self) -> None:
+        self._run_update(BROWSER_SETUP + dedent("""
+            async def check():
+                with TemporaryDirectory() as directory:
+                    client = browser_client(directory)
+                    session = Mock(get=AsyncMock(side_effect=[
+                        browser_reply(weather_markup()), browser_reply(air_markup("12", "6")),
+                    ]))
+                    with patch.object(api, "async_get_clientsession", return_value=session):
+                        await client.update()
+                    previous = (client.result, client.forecast, client.forecast_hour, client.weathertype)
+                    direct = browser_reply("")
+                    direct.raise_for_status.side_effect = api.ClientError("direct request failed")
+                    session.get = AsyncMock(side_effect=[
+                        browser_reply(weather_markup(temperature="99")),
+                        browser_reply("unavailable", status=502), direct,
+                    ])
+                    with patch.object(api, "async_get_clientsession", return_value=session):
+                        try:
+                            await client.update()
+                        except api.ClientError:
+                            pass
+                        else:
+                            raise AssertionError("A failed direct fallback must fail the refresh")
+                    assert len(session.get.await_args_list) == 3
+                    assert client.result is previous[0]
+                    assert client.forecast is previous[1]
+                    assert client.forecast_hour is previous[2]
+                    assert client.weathertype == previous[3]
+                    assert float(client.result[NOW_TEMP[0]]) == -2.5
+            asyncio.run(check())
+        """))
 
     def test_summary_probability_average_uses_first_twelve_valid_count(self) -> None:
         self._run_update("""

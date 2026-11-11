@@ -7,10 +7,9 @@ from datetime import datetime, timedelta, timezone
 from typing import Literal, Protocol, overload
 from urllib.parse import urldefrag, urljoin, urlsplit
 
-from aiohttp import ClientTimeout
+from aiohttp import ClientError, ClientTimeout
 from bs4.element import Tag
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
-from homeassistant.util.ssl import client_context
 
 from .bs4_compat import BeautifulSoup
 from .const import (
@@ -21,6 +20,7 @@ from .const import (
     CONDITION,
     CONDITIONS,
     CONF_AREA,
+    CONF_BROWSER_URL,
     CONF_TODAY,
     DEVICE_REG,
     DEVICE_UNREG,
@@ -652,6 +652,11 @@ class NWeatherAPI:
 
         return today
 
+    @property
+    def browser_url(self) -> str:
+        """Read the current optional service address without requiring a reload."""
+        return self.entry.options.get(CONF_BROWSER_URL, "")
+
 
     def init_device(self, unique_id):
         """Initialize device."""
@@ -737,6 +742,24 @@ class NWeatherAPI:
             return target
         return None
 
+    async def _browser_page(self, session, url: str) -> str | None:
+        """Try the browser service, leaving this page's direct request as fallback."""
+        try:
+            response = await session.get(
+                self.browser_url + "/render",
+                params={"url": url},
+                timeout=ClientTimeout(total=60),
+            )
+            try:
+                if response.status == 200:
+                    return await response.text()
+                _LOGGER.debug("브라우저 서비스 응답 상태: %s", response.status)
+            finally:
+                response.release()
+        except (ClientError, TimeoutError) as error:
+            _LOGGER.debug("브라우저 서비스 오류: %s", type(error).__name__)
+        return None
+
     async def update(self):
         """Update function for updating api information."""
         try:
@@ -759,22 +782,25 @@ class NWeatherAPI:
             }
 
             session = async_get_clientsession(self.hass)
-            # Naver refuses requests whose TLS hello offers only the http/1.1 ALPN that
-            # Home Assistant's shared session sends; this preloaded context offers none.
-            tls = client_context()
 
-            response = await session.get(url, headers=hdr, ssl=tls, timeout=ClientTimeout(total=30))
-            response.raise_for_status()
+            weather_html = await self._browser_page(session, url) if self.browser_url else None
+            if weather_html is None:
+                response = await session.get(url, headers=hdr, timeout=ClientTimeout(total=30))
+                response.raise_for_status()
+                weather_html = await response.text()
 
-            soup = BeautifulSoup(await response.text(), "html.parser")
+            soup = BeautifulSoup(weather_html, "html.parser")
 
             #미세먼지
             # A query of only the area and "미세먼지" often returns no local values.
             url_air = self._local_air_url(soup, url) or url_air
-            air = await session.get(url_air, headers=hdr, ssl=tls, timeout=ClientTimeout(total=30))
-            air.raise_for_status()
+            air_html = await self._browser_page(session, url_air) if self.browser_url else None
+            if air_html is None:
+                air = await session.get(url_air, headers=hdr, timeout=ClientTimeout(total=30))
+                air.raise_for_status()
+                air_html = await air.text()
 
-            bs4air = BeautifulSoup(await air.text(), "html.parser")
+            bs4air = BeautifulSoup(air_html, "html.parser")
             reference_time = datetime.now(KST)
 
             # 지역
