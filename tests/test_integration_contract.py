@@ -29,9 +29,6 @@ def _set_attributes(module: types.ModuleType, **attributes: object) -> None:
         setattr(module, name, value)
 
 
-NO_ALPN_CONTEXT = object()
-
-
 def install_home_assistant_shims() -> None:
     """Install the small Home Assistant surface needed by these unit tests."""
     aiohttp = _module("aiohttp")
@@ -76,8 +73,6 @@ def install_home_assistant_shims() -> None:
     update_coordinator = _module("homeassistant.helpers.update_coordinator")
     storage = _module("homeassistant.helpers.storage")
     exceptions = _module("homeassistant.exceptions")
-    util = _module("homeassistant.util")
-    util_ssl = _module("homeassistant.util.ssl")
     components = _module("homeassistant.components")
     sensor = _module("homeassistant.components.sensor")
     weather = _module("homeassistant.components.weather")
@@ -91,8 +86,7 @@ def install_home_assistant_shims() -> None:
     _set_attributes(helpers, config_validation=config_validation)
     _set_attributes(helpers, aiohttp_client=aiohttp_client)
     _set_attributes(helpers, storage=storage)
-    _set_attributes(homeassistant, exceptions=exceptions, util=util)
-    _set_attributes(util, ssl=util_ssl)
+    _set_attributes(homeassistant, exceptions=exceptions)
     _set_attributes(helpers, update_coordinator=update_coordinator)
     _set_attributes(components, sensor=sensor)
     _set_attributes(components, weather=weather)
@@ -197,7 +191,6 @@ def install_home_assistant_shims() -> None:
     _set_attributes(config_entries, ConfigFlowResult=dict)
     _set_attributes(config_entries, ConfigEntryNotReady=ConfigEntryNotReady)
     _set_attributes(exceptions, ConfigEntryNotReady=ConfigEntryNotReady)
-    _set_attributes(util_ssl, client_context=lambda: NO_ALPN_CONTEXT)
 
     class Store:
         @classmethod
@@ -668,12 +661,12 @@ class IntegrationContractTest(unittest.TestCase):
                 self.assertEqual(api.result, {})
                 self.assertFalse(coordinator.has_recent_data)
 
-    def test_naver_requests_use_the_context_without_alpn(self):
+    def test_direct_naver_requests_use_the_shared_session_defaults(self):
         source = (INTEGRATION / "api_nweather.py").read_text(encoding="utf-8")
-        self.assertEqual(source.count("ssl=tls"), 2)
-        self.assertEqual(source.count("session.get(url, headers=hdr, ssl=tls"), 1)
-        self.assertEqual(source.count("session.get(url_air, headers=hdr, ssl=tls"), 1)
-        self.assertIn("tls = client_context()", source)
+        self.assertNotIn("client_context", source)
+        self.assertNotIn("ssl=", source)
+        self.assertEqual(source.count("session.get(url, headers=hdr, timeout="), 1)
+        self.assertEqual(source.count("session.get(url_air, headers=hdr, timeout="), 1)
 
     def test_platforms_share_coordinator_and_never_poll_independently(self):
         init_source = (INTEGRATION / "__init__.py").read_text(encoding="utf-8")

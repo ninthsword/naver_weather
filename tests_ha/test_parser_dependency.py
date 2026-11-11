@@ -15,7 +15,6 @@ from html import escape
 from pathlib import Path
 
 import homeassistant.helpers.aiohttp_client as ha_client
-import homeassistant.util.ssl as ssl_util
 from bs4 import BeautifulSoup
 from bs4.element import Tag
 from custom_components.naver_weather_custom import api_nweather as api
@@ -170,11 +169,7 @@ async def update_from_markup(client, weather, air):
     assert session.get.await_count == 2
     for response in responses:
         response.raise_for_status.assert_called_once_with()
-    no_alpn = ssl_util.client_context()
-    assert no_alpn is not ssl_util.client_context(
-        ssl_util.SSLCipherList.PYTHON_DEFAULT, ssl_util.SSL_ALPN_HTTP11
-    )
-    assert [call.kwargs["ssl"] for call in session.get.await_args_list] == [no_alpn, no_alpn]
+    assert all("ssl" not in call.kwargs for call in session.get.await_args_list)
 
 
 def make_entities(directory):
@@ -298,7 +293,7 @@ class ParserDependencyTest(unittest.TestCase):
                             assert [call.args[0] for call in calls] == expected, calls
                             direct_index = 1 if failed_page == 0 else 2
                             direct = calls[direct_index]
-                            assert direct.kwargs["ssl"] is ssl_util.client_context()
+                            assert "ssl" not in direct.kwargs
                             assert direct.kwargs["timeout"].total == 30
                             assert "headers" in direct.kwargs and "params" not in direct.kwargs
                             (weather if failed_page == 0 else air).raise_for_status.assert_called_once_with()

@@ -10,7 +10,6 @@ from urllib.parse import urldefrag, urljoin, urlsplit
 from aiohttp import ClientError, ClientTimeout
 from bs4.element import Tag
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
-from homeassistant.util.ssl import client_context
 
 from .bs4_compat import BeautifulSoup
 from .const import (
@@ -783,13 +782,10 @@ class NWeatherAPI:
             }
 
             session = async_get_clientsession(self.hass)
-            # Naver refuses requests whose TLS hello offers only the http/1.1 ALPN that
-            # Home Assistant's shared session sends; this preloaded context offers none.
-            tls = client_context()
 
             weather_html = await self._browser_page(session, url) if self.browser_url else None
             if weather_html is None:
-                response = await session.get(url, headers=hdr, ssl=tls, timeout=ClientTimeout(total=30))
+                response = await session.get(url, headers=hdr, timeout=ClientTimeout(total=30))
                 response.raise_for_status()
                 weather_html = await response.text()
 
@@ -800,7 +796,7 @@ class NWeatherAPI:
             url_air = self._local_air_url(soup, url) or url_air
             air_html = await self._browser_page(session, url_air) if self.browser_url else None
             if air_html is None:
-                air = await session.get(url_air, headers=hdr, ssl=tls, timeout=ClientTimeout(total=30))
+                air = await session.get(url_air, headers=hdr, timeout=ClientTimeout(total=30))
                 air.raise_for_status()
                 air_html = await air.text()
 
