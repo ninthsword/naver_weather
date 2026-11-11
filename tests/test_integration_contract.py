@@ -29,6 +29,9 @@ def _set_attributes(module: types.ModuleType, **attributes: object) -> None:
         setattr(module, name, value)
 
 
+NO_ALPN_CONTEXT = object()
+
+
 def install_home_assistant_shims() -> None:
     """Install the small Home Assistant surface needed by these unit tests."""
     aiohttp = _module("aiohttp")
@@ -66,6 +69,10 @@ def install_home_assistant_shims() -> None:
     config_validation = _module("homeassistant.helpers.config_validation")
     aiohttp_client = _module("homeassistant.helpers.aiohttp_client")
     update_coordinator = _module("homeassistant.helpers.update_coordinator")
+    storage = _module("homeassistant.helpers.storage")
+    exceptions = _module("homeassistant.exceptions")
+    util = _module("homeassistant.util")
+    util_ssl = _module("homeassistant.util.ssl")
     components = _module("homeassistant.components")
     sensor = _module("homeassistant.components.sensor")
     weather = _module("homeassistant.components.weather")
@@ -78,6 +85,9 @@ def install_home_assistant_shims() -> None:
     _set_attributes(homeassistant, components=components)
     _set_attributes(helpers, config_validation=config_validation)
     _set_attributes(helpers, aiohttp_client=aiohttp_client)
+    _set_attributes(helpers, storage=storage)
+    _set_attributes(homeassistant, exceptions=exceptions, util=util)
+    _set_attributes(util, ssl=util_ssl)
     _set_attributes(helpers, update_coordinator=update_coordinator)
     _set_attributes(components, sensor=sensor)
     _set_attributes(components, weather=weather)
@@ -181,6 +191,25 @@ def install_home_assistant_shims() -> None:
     _set_attributes(config_entries, ConfigEntry=ConfigEntry)
     _set_attributes(config_entries, ConfigFlowResult=dict)
     _set_attributes(config_entries, ConfigEntryNotReady=ConfigEntryNotReady)
+    _set_attributes(exceptions, ConfigEntryNotReady=ConfigEntryNotReady)
+    _set_attributes(util_ssl, client_context=lambda: NO_ALPN_CONTEXT)
+
+    class Store:
+        @classmethod
+        def __class_getitem__(cls, item):
+            return cls
+
+        def __init__(self, hass, version, key):
+            self.key = key
+            self.data = None
+
+        async def async_load(self):
+            return self.data
+
+        def async_delay_save(self, data_func, delay=0):
+            self.data = data_func()
+
+    _set_attributes(storage, Store=Store)
     _set_attributes(config_entries, ConfigFlow=ConfigFlow)
     _set_attributes(config_entries, OptionsFlow=OptionsFlow)
     _set_attributes(config_entries, SOURCE_IMPORT="import")
@@ -279,6 +308,7 @@ class FakeEntry:
             self.data["today"] = today
         self.options = options or {}
         self.unique_id = unique_id
+        self.entry_id = "entry"
 
 
 class FakeHass:
@@ -545,6 +575,99 @@ class IntegrationContractTest(unittest.TestCase):
         self.assertFalse(coordinator.last_update_success)
         self.assertIsInstance(context.exception.__cause__, RuntimeError)
         self.assertIn("cold-start", str(context.exception.__cause__))
+
+    def _restore_case(self, stored):
+        entry = FakeEntry()
+        api = api_module.NWeatherAPI(FakeHass(), entry, 1)
+
+        async def update():
+            raise RuntimeError("fixture refused")
+
+        api.update = update
+        coordinator = coordinator_module.NWeatherDataUpdateCoordinator(FakeHass(), api, entry)
+        coordinator._store.data = stored
+        return api, coordinator
+
+    def test_successful_refresh_stores_a_recoverable_payload(self):
+        entry = FakeEntry()
+        api = api_module.NWeatherAPI(FakeHass(), entry, 1)
+        moment = datetime(2026, 11, 11, 13, 0, tzinfo=api_module.KST)
+
+        async def update():
+            api.result = {"NowTemp": "13.8", "publicTimeC": moment}
+            api.forecast = [{"datetime": moment, "templow": 2}]
+            api.forecast_hour = [{"datetime": moment, "native_temperature": 13}]
+            api.weathertype = "맑음"
+
+        api.update = update
+        coordinator = coordinator_module.NWeatherDataUpdateCoordinator(FakeHass(), api, entry)
+        with patch.object(coordinator_module, "time", return_value=5000.0):
+            asyncio.run(coordinator.async_config_entry_first_refresh())
+        stored = coordinator._store.data
+        self.assertEqual(stored["saved_at"], 5000.0)
+        self.assertEqual(stored["result"]["publicTimeC"], {"__datetime__": moment.isoformat()})
+        json.dumps(stored)
+        restored = coordinator_module._decode(stored)
+        self.assertEqual(restored["result"], api.result)
+        self.assertEqual(restored["forecast"], api.forecast)
+        self.assertEqual(restored["forecast_hour"], api.forecast_hour)
+
+    def test_failed_first_refresh_starts_from_a_recent_stored_payload(self):
+        payload = coordinator_module._encode({
+            "saved_at": 10_000.0 - 600,
+            "result": {"NowTemp": "13.8"},
+            "forecast": [{"datetime": datetime(2026, 11, 12, tzinfo=api_module.KST)}],
+            "forecast_hour": [],
+            "weathertype": "맑음",
+        })
+        api, coordinator = self._restore_case(payload)
+        with patch.object(coordinator_module, "time", return_value=10_000.0), patch.object(
+            coordinator_module, "monotonic", return_value=50_000.0
+        ):
+            asyncio.run(coordinator.async_config_entry_first_refresh())
+            self.assertFalse(coordinator.last_update_success)
+            self.assertTrue(coordinator.has_recent_data)
+        self.assertEqual(api.result, {"NowTemp": "13.8"})
+        self.assertEqual(coordinator.data, {"NowTemp": "13.8"})
+        self.assertIsInstance(api.forecast[0]["datetime"], datetime)
+        self.assertEqual(api.weathertype, "맑음")
+        self.assertEqual(coordinator.last_good_refresh, 50_000.0 - 600)
+
+    def test_restore_accepts_a_payload_without_a_weather_type(self):
+        payload = {"saved_at": 10_000.0 - 600, "result": {"NowTemp": "13.8"},
+                   "forecast": [], "forecast_hour": [], "weathertype": None}
+        api, coordinator = self._restore_case(payload)
+        with patch.object(coordinator_module, "time", return_value=10_000.0):
+            asyncio.run(coordinator.async_config_entry_first_refresh())
+        self.assertIsNone(api.weathertype)
+        self.assertEqual(api.result, {"NowTemp": "13.8"})
+
+    def test_failed_first_refresh_without_usable_stored_payload_stays_not_ready(self):
+        recent = {"saved_at": 10_000.0 - 600, "result": {}, "forecast": [],
+                  "forecast_hour": [], "weathertype": ""}
+        cases = {
+            "nothing stored": None,
+            "an hour old": {**recent, "saved_at": 10_000.0 - 3600},
+            "from the future": {**recent, "saved_at": 10_000.0 + 1},
+            "missing key": {key: value for key, value in recent.items() if key != "forecast"},
+            "wrong type": {**recent, "result": []},
+            "bad saved_at": {**recent, "saved_at": "soon"},
+            "bad datetime": {**recent, "forecast": [{"datetime": {"__datetime__": "x"}}]},
+            "not a dict": [recent],
+        }
+        for name, stored in cases.items():
+            with self.subTest(name), patch.object(coordinator_module, "time", return_value=10_000.0):
+                api, coordinator = self._restore_case(stored)
+                with self.assertRaises(config_flow_module.config_entries.ConfigEntryNotReady):
+                    asyncio.run(coordinator.async_config_entry_first_refresh())
+                self.assertEqual(api.result, {})
+                self.assertFalse(coordinator.has_recent_data)
+
+    def test_naver_requests_use_the_context_without_alpn(self):
+        source = (INTEGRATION / "api_nweather.py").read_text(encoding="utf-8")
+        self.assertEqual(source.count("ssl=tls"), 2)
+        self.assertEqual(source.count("session.get("), 2)
+        self.assertIn("tls = client_context()", source)
 
     def test_platforms_share_coordinator_and_never_poll_independently(self):
         init_source = (INTEGRATION / "__init__.py").read_text(encoding="utf-8")
