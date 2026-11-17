@@ -55,6 +55,108 @@ def _forecast_datetime(value) -> str | None:
     return timestamp.astimezone(timezone.utc).isoformat()
 
 
+def build_daily_forecast(api, twice_daily: bool) -> list[Forecast]:
+    forecast = []
+
+    daily_rows = filter_daily_forecast_rows(
+        api.forecast, bool(api.today), datetime.now(KST)
+    )
+    for data in daily_rows:
+        #주간
+        next_day = {
+            ATTR_FORECAST_TIME: _forecast_datetime(data.get("datetime")),
+            ATTR_FORECAST_CONDITION: condition_daily(data["condition_am"], data["condition_pm"]),
+            ATTR_FORECAST_NATIVE_TEMP_LOW: data["templow"],
+            ATTR_FORECAST_NATIVE_TEMP: data["temperature"],
+            ATTR_FORECAST_PRECIPITATION_PROBABILITY: data["rain_rate_am"],
+            #ATTR_FORECAST_WIND_BEARING: data[""],
+            #ATTR_FORECAST_WIND_SPEED: data[""],
+
+            # Not officially supported, but nice additions.
+            "condition_am": data["condition_am"],
+            "condition_pm": data["condition_pm"],
+            "weathertype_am": data["weathertype_am"],
+            "weathertype_pm": data["weathertype_pm"],
+
+            "rain_rate_am": data["rain_rate_am"],
+            "rain_rate_pm": data["rain_rate_pm"]
+        }
+
+        if twice_daily:
+            next_day[ATTR_FORECAST_CONDITION] = data["condition_am"]
+            next_day["is_daytime"] = True
+
+        forecast.append(next_day)
+
+        # FORECAST_TWICE_DAILY 일때만
+        if twice_daily:
+            #야간
+            next_day = {
+                ATTR_FORECAST_TIME: _forecast_datetime(data.get("datetime")),
+                ATTR_FORECAST_CONDITION: data["condition_pm"],
+                ATTR_FORECAST_NATIVE_TEMP_LOW: data["templow"],
+                ATTR_FORECAST_NATIVE_TEMP: data["temperature"],
+                ATTR_FORECAST_PRECIPITATION_PROBABILITY: data["rain_rate_pm"],
+                #ATTR_FORECAST_WIND_BEARING: data[""],
+                #ATTR_FORECAST_WIND_SPEED: data[""],
+                "is_daytime" : False,
+
+                # Not officially supported, but nice additions.
+                "condition_am": data["condition_am"],
+                "condition_pm": data["condition_pm"],
+                "weathertype_am": data["weathertype_am"],
+                "weathertype_pm": data["weathertype_pm"],
+
+                "rain_rate_am": data["rain_rate_am"],
+                "rain_rate_pm": data["rain_rate_pm"]
+            }
+            forecast.append(next_day)
+
+    return forecast
+
+
+def build_hourly_forecast(api) -> list[Forecast]:
+    forecast = []
+
+    for data in api.forecast_hour:
+        # Hourly parser data stays in native units until this HA boundary.
+        native_wind_speed = data.get("native_wind_speed")
+        if native_wind_speed is None:
+            native_wind_speed = data.get("wind_speed")
+        next_day = {
+            ATTR_FORECAST_TIME: _forecast_datetime(data.get("datetime")),
+            ATTR_FORECAST_CONDITION: data.get("condition"),
+            ATTR_FORECAST_NATIVE_TEMP: data.get("native_temperature"),
+            ATTR_FORECAST_PRECIPITATION_PROBABILITY: data.get("precipitation_probability"),
+            ATTR_FORECAST_WIND_BEARING: data.get("wind_bearing"),
+            ATTR_FORECAST_NATIVE_WIND_SPEED: native_wind_speed,
+            ATTR_FORECAST_NATIVE_PRECIPITATION: data.get("native_precipitation"),
+
+            # Not officially supported, but nice additions.
+            "weathertype_hour": data.get("weathertype_hour"),
+            #"condition_pm": data["condition_pm"],
+            "humidity": data.get("humidity"),
+        }
+
+        forecast.append(next_day)
+
+    return forecast
+
+
+def condition_daily(am, pm):
+
+    list = ["snowy", "pouring", "rainy", "cloudy", "windy"]
+
+    for feature in list:
+        if ( feature in am or feature in pm ):
+            if feature in am:
+                return am
+            else:
+                return pm
+
+    return am
+
+
 async def async_setup_entry(hass, config_entry, async_add_entities):
     """Add a entity from a config_entry."""
 
@@ -81,6 +183,19 @@ class NWeatherMain(NWeatherDevice, WeatherEntity):  # pyright: ignore[reportInco
     _attr_native_wind_speed_unit = UnitOfSpeed.METERS_PER_SECOND
     _attr_supported_features = ( WeatherEntityFeature.FORECAST_DAILY | WeatherEntityFeature.FORECAST_TWICE_DAILY | WeatherEntityFeature.FORECAST_HOURLY )
     
+    async def async_added_to_hass(self):
+        """Expose HA's forecast conversion to this entry's forecast sensors."""
+        await super().async_added_to_hass()
+        self.api.weather_entity = self
+        self.coordinator.async_update_listeners()
+
+    async def async_will_remove_from_hass(self) -> None:
+        """Clear the converter and update sensors when this weather entity leaves."""
+        await super().async_will_remove_from_hass()
+        if self.api.weather_entity is self:
+            self.api.weather_entity = None
+            self.coordinator.async_update_listeners()
+
     # HA declares a cached descriptor; retain this integration's property semantics.
     @property
     def name(self) -> str:  # pyright: ignore[reportIncompatibleVariableOverride]
@@ -88,6 +203,8 @@ class NWeatherMain(NWeatherDevice, WeatherEntity):  # pyright: ignore[reportInco
         if not self.api.get_data(self.unique_id):
             self.api.set_data(self.unique_id, True)
             return self.device[0] + " " + str(self.api.count)
+        elif self.api.location_entity is not None:
+            return "현재 위치"
         elif self.area != "날씨":
             return self.area.split(" 날씨")[0]
         else:
@@ -166,101 +283,10 @@ class NWeatherMain(NWeatherDevice, WeatherEntity):  # pyright: ignore[reportInco
         return self._forecast(WeatherEntityFeature.FORECAST_DAILY)
 
     def _forecast(self, feature) -> list[Forecast] | None:
-        forecast = []
-
-        daily_rows = filter_daily_forecast_rows(
-            self.api.forecast, bool(self.api.today), datetime.now(KST)
-        )
-        for data in daily_rows:
-            #주간
-            next_day = {
-                ATTR_FORECAST_TIME: _forecast_datetime(data.get("datetime")),
-                ATTR_FORECAST_CONDITION: self._condition_daily(data["condition_am"], data["condition_pm"]),
-                ATTR_FORECAST_NATIVE_TEMP_LOW: data["templow"],
-                ATTR_FORECAST_NATIVE_TEMP: data["temperature"],
-                ATTR_FORECAST_PRECIPITATION_PROBABILITY: data["rain_rate_am"],
-                #ATTR_FORECAST_WIND_BEARING: data[""],
-                #ATTR_FORECAST_WIND_SPEED: data[""],
-                
-                # Not officially supported, but nice additions.
-                "condition_am": data["condition_am"],
-                "condition_pm": data["condition_pm"],
-                "weathertype_am": data["weathertype_am"],
-                "weathertype_pm": data["weathertype_pm"],
-
-                "rain_rate_am": data["rain_rate_am"],
-                "rain_rate_pm": data["rain_rate_pm"]
-            }
-
-            if feature == WeatherEntityFeature.FORECAST_TWICE_DAILY:
-                next_day[ATTR_FORECAST_CONDITION] = data["condition_am"]
-                next_day["is_daytime"] = True
-
-            forecast.append(next_day)
-
-            # FORECAST_TWICE_DAILY 일때만
-            if feature == WeatherEntityFeature.FORECAST_TWICE_DAILY:
-                #야간
-                next_day = {
-                    ATTR_FORECAST_TIME: _forecast_datetime(data.get("datetime")),
-                    ATTR_FORECAST_CONDITION: data["condition_pm"],
-                    ATTR_FORECAST_NATIVE_TEMP_LOW: data["templow"],
-                    ATTR_FORECAST_NATIVE_TEMP: data["temperature"],
-                    ATTR_FORECAST_PRECIPITATION_PROBABILITY: data["rain_rate_pm"],
-                    #ATTR_FORECAST_WIND_BEARING: data[""],
-                    #ATTR_FORECAST_WIND_SPEED: data[""],
-                    "is_daytime" : False,
-                    
-                    # Not officially supported, but nice additions.
-                    "condition_am": data["condition_am"],
-                    "condition_pm": data["condition_pm"],
-                    "weathertype_am": data["weathertype_am"],
-                    "weathertype_pm": data["weathertype_pm"],
-
-                    "rain_rate_am": data["rain_rate_am"],
-                    "rain_rate_pm": data["rain_rate_pm"]
-                }
-                forecast.append(next_day)
-
-        return forecast
-
+        return build_daily_forecast(self.api, feature == WeatherEntityFeature.FORECAST_TWICE_DAILY)
 
     def _forecast_hour(self, feature) -> list[Forecast] | None:
-        forecast = []
-
-        for data in self.api.forecast_hour:
-            # Hourly parser data stays in native units until this HA boundary.
-            native_wind_speed = data.get("native_wind_speed")
-            if native_wind_speed is None:
-                native_wind_speed = data.get("wind_speed")
-            next_day = {
-                ATTR_FORECAST_TIME: _forecast_datetime(data.get("datetime")),
-                ATTR_FORECAST_CONDITION: data.get("condition"),
-                ATTR_FORECAST_NATIVE_TEMP: data.get("native_temperature"),
-                ATTR_FORECAST_PRECIPITATION_PROBABILITY: data.get("precipitation_probability"),
-                ATTR_FORECAST_WIND_BEARING: data.get("wind_bearing"),
-                ATTR_FORECAST_NATIVE_WIND_SPEED: native_wind_speed,
-                ATTR_FORECAST_NATIVE_PRECIPITATION: data.get("native_precipitation"),
-                
-                # Not officially supported, but nice additions.
-                "weathertype_hour": data.get("weathertype_hour"),
-                #"condition_pm": data["condition_pm"],
-                "humidity": data.get("humidity"),
-            }
-
-            forecast.append(next_day)
-    
-        return forecast
+        return build_hourly_forecast(self.api)
 
     def _condition_daily(self, am, pm):
-
-        list = ["snowy", "pouring", "rainy", "cloudy", "windy"]
-        
-        for feature in list:
-            if ( feature in am or feature in pm ):
-                if feature in am:
-                    return am
-                else:
-                    return pm
-
-        return am
+        return condition_daily(am, pm)

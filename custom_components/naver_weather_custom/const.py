@@ -26,6 +26,7 @@ BSE_URL = "https://search.naver.com/search.naver?query={}"
 # area
 CONF_AREA  = "area"
 CONF_BROWSER_URL = "browser_url"
+CONF_LOCATION_ENTITY = "location_entity"
 CONF_TODAY = "today"
 CONF_REGION = "region"
 DEFAULT_AREA = "날씨"

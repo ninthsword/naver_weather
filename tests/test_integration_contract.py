@@ -10,7 +10,7 @@ import unittest
 from datetime import datetime
 from itertools import pairwise
 from pathlib import Path
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import AsyncMock, Mock, PropertyMock, patch
 
 REPOSITORY = Path(__file__).resolve().parents[1]
 INTEGRATION = REPOSITORY / "custom_components" / "naver_weather_custom"
@@ -72,6 +72,7 @@ def install_home_assistant_shims() -> None:
     aiohttp_client = _module("homeassistant.helpers.aiohttp_client")
     update_coordinator = _module("homeassistant.helpers.update_coordinator")
     storage = _module("homeassistant.helpers.storage")
+    selector = _module("homeassistant.helpers.selector")
     exceptions = _module("homeassistant.exceptions")
     components = _module("homeassistant.components")
     sensor = _module("homeassistant.components.sensor")
@@ -86,6 +87,9 @@ def install_home_assistant_shims() -> None:
     _set_attributes(helpers, config_validation=config_validation)
     _set_attributes(helpers, aiohttp_client=aiohttp_client)
     _set_attributes(helpers, storage=storage)
+    _set_attributes(helpers, selector=selector)
+    _set_attributes(selector, EntitySelector=lambda config: config)
+    _set_attributes(selector, EntitySelectorConfig=lambda **kwargs: kwargs)
     _set_attributes(homeassistant, exceptions=exceptions)
     _set_attributes(helpers, update_coordinator=update_coordinator)
     _set_attributes(components, sensor=sensor)
@@ -314,6 +318,9 @@ class FakeHass:
 
     config_entries = types.SimpleNamespace(async_update_entry=lambda **kwargs: None)
 
+    def __init__(self):
+        self.states: dict[str, types.SimpleNamespace] = {}
+
 
 class FakeNode:
     """Small selector-backed DOM node for parser contract tests."""
@@ -406,6 +413,21 @@ class IntegrationContractTest(unittest.TestCase):
         assert isinstance(current_key.args[1], ast.Name)
         self.assertEqual(current_key.args[1].id, "summ")
         previous = call.args[1]
+        assert isinstance(previous, ast.Name)
+        self.assertEqual(previous.id, "previous_humidity")
+        previous_assignments = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Assign)
+            and any(
+                isinstance(target, ast.Name) and target.id == "previous_humidity"
+                for target in node.targets
+            )
+        ]
+        self.assertEqual(len(previous_assignments), 1)
+        conditional = previous_assignments[0].value
+        assert isinstance(conditional, ast.IfExp)
+        previous = conditional.body
         assert isinstance(previous, ast.Call)
         assert isinstance(previous.func, ast.Attribute)
         self.assertEqual(previous.func.attr, "get")
@@ -1087,6 +1109,327 @@ class IntegrationContractTest(unittest.TestCase):
             api_module.filter_daily_forecast_rows(rows, True, reference), rows
         )
         self.assertEqual(rows[0]["value"], 0)
+
+
+class LocationForecastContractTest(unittest.TestCase):
+    """Protect moving-location queries, stable identities and forecast sensors."""
+
+    def _location_api(self, attributes=None):
+        hass = FakeHass()
+        if attributes is not None:
+            hass.states["sensor.synthetic_location"] = types.SimpleNamespace(
+                attributes=attributes
+            )
+        entry = FakeEntry()
+        entry.data = {"location_entity": "sensor.synthetic_location", "today": True}
+        return api_module.NWeatherAPI(hass, entry, 1)
+
+    def _update_api(self, api, summary=None, on_request=None):
+        soup = Mock()
+        soup.select.return_value = []
+        soup.find.return_value = None
+        response = Mock(text=AsyncMock(return_value="<html></html>"))
+
+        async def get(*args, **kwargs):
+            if on_request is not None:
+                on_request()
+            return response
+
+        session = Mock(get=AsyncMock(side_effect=get))
+
+        def select_one(node, selector, *args):
+            if selector == "div.weather_info > div > div > div.temperature_info > dl":
+                return summary
+            return None
+
+        with patch.object(api_module, "async_get_clientsession", return_value=session), patch.object(
+            api_module, "BeautifulSoup", return_value=soup
+        ), patch.object(api, "_bs4_select_one", side_effect=select_one):
+            asyncio.run(api.update())
+        return session
+
+    def test_location_parts_normalize_before_building_safe_queries(self):
+        cases = [
+            (None, None), (False, None), (27, None), ([], None),
+            ("", None), (" \t\n ", None), ("N/A", None), (" n/a ", None),
+            (" N/a ", None), ("& &", None), ("Seoul &", "Seoul"),
+            ("  테스트시\t  가상구  ", "테스트시 가상구"),
+            ("테스트·시-1.2\t#가상동?x=2", "테스트·시-1.2 가상동x2"),
+            ("N / A", "N A"),
+        ]
+        for value, expected in cases:
+            with self.subTest(value=value):
+                self.assertEqual(api_module.location_part(value), expected)
+
+    def test_location_area_follows_live_attributes_and_keeps_last_valid_area(self):
+        api = self._location_api()
+        self.assertIsNone(api.area)
+        self.assertEqual(api.entity_key, "location_entry")
+        state = types.SimpleNamespace(attributes={
+            "Locality": " 테스트시 & ", "Sub Locality": " 가상동# "
+        })
+        api.hass.states[api.location_entity] = state
+        self.assertEqual(api.area, "테스트시 가상동 날씨")
+        for locality in (None, "", "n/a", "& &", 1):
+            state.attributes = {"Locality": locality, "Sub Locality": "다른동"}
+            self.assertEqual(api.area, "테스트시 가상동 날씨")
+        for sub_locality in (None, "N/A", 1, " "):
+            state.attributes = {"Locality": "다른시", "Sub Locality": sub_locality}
+            self.assertEqual(api.area, "다른시 날씨")
+        api.hass.states.clear()
+        self.assertEqual(api.area, "다른시 날씨")
+        self.assertEqual(api.entity_key, "location_entry")
+        no_city = self._location_api({"Sub Locality": "가상동"})
+        self.assertIsNone(no_city.area)
+
+    def test_location_entity_data_precedes_options_and_fixed_areas_stay_unchanged(self):
+        api = self._location_api()
+        api.entry.options["location_entity"] = "sensor.other_location"
+        self.assertEqual(api.location_entity, "sensor.synthetic_location")
+        api.entry.data.pop("location_entity")
+        self.assertEqual(api.location_entity, "sensor.other_location")
+        for area, options, expected in (
+            ("날씨", {}, "날씨"),
+            ("테스트시", {}, "테스트시 날씨"),
+            ("테스트시", {"area": "다른시"}, "다른시 날씨"),
+        ):
+            with self.subTest(area=area, options=options):
+                fixed = api_module.NWeatherAPI(FakeHass(), FakeEntry(area, options=options), 1)
+                self.assertIsNone(fixed.location_entity)
+                self.assertEqual(fixed.area, expected)
+                self.assertEqual(fixed.entity_key, expected)
+
+    def test_missing_initial_location_fails_before_requesting_any_page(self):
+        api = self._location_api({"Locality": "N/A", "Sub Locality": "가상동"})
+        with patch.object(api_module, "async_get_clientsession") as get_session:
+            with self.assertRaisesRegex(ValueError, "sensor.synthetic_location"):
+                asyncio.run(api.update())
+            get_session.assert_not_called()
+        self.assertEqual(api.result, {})
+        self.assertIsNone(api.result_area)
+
+    def test_update_reads_area_once_across_both_requests_and_records_that_area(self):
+        api = self._location_api({"Locality": "테스트시", "Sub Locality": "첫동"})
+        api.result = {"Humidity": "61"}
+        api.result_area = "테스트시 첫동 날씨"
+
+        def move():
+            api.hass.states[api.location_entity].attributes = {
+                "Locality": "다른시", "Sub Locality": "다음동"
+            }
+
+        area_getter = vars(type(api))["area"].fget
+        with patch.object(type(api), "area", new_callable=PropertyMock) as area:
+            area.side_effect = lambda: area_getter(api)
+            session = self._update_api(api, on_request=move)
+            self.assertEqual(area.call_count, 1)
+        self.assertEqual(
+            [call.args[0] for call in session.get.await_args_list],
+            [const_module.BSE_URL.format("테스트시 첫동 날씨"),
+             const_module.BSE_URL.format("테스트시 첫동 미세먼지")],
+        )
+        self.assertEqual(api.result_area, "테스트시 첫동 날씨")
+        self.assertEqual(api.result["Humidity"], "61")
+        self.assertEqual(api.area, "다른시 다음동 날씨")
+
+    def test_missing_humidity_is_retained_only_for_the_same_location(self):
+        for previous_area, summary, expected in (
+            ("테스트시 가상동 날씨", None, "61"),
+            ("다른시 다른동 날씨", None, None),
+            (None, None, None),
+            ("다른시 다른동 날씨", "습도 62", "62"),
+            ("테스트시 가상동 날씨", "습도 101", "61"),
+        ):
+            with self.subTest(previous_area=previous_area, summary=summary):
+                api = self._location_api({"Locality": "테스트시", "Sub Locality": "가상동"})
+                api.result = {"Humidity": "61"}
+                api.result_area = previous_area
+                self._update_api(api, summary)
+                self.assertEqual(api.result["Humidity"], expected)
+                self.assertEqual(api.result_area, "테스트시 가상동 날씨")
+        fixed = api_module.NWeatherAPI(FakeHass(), FakeEntry("테스트시"), 1)
+        fixed.result = {"Humidity": "61"}
+        fixed.result_area = "다른시 날씨"
+        self._update_api(fixed)
+        self.assertEqual(fixed.result["Humidity"], "61")
+
+    def test_failed_location_refresh_keeps_the_last_successful_result_area(self):
+        api = self._location_api({"Locality": "다른시"})
+        previous_result = {"Humidity": "61"}
+        api.result, api.result_area = previous_result, "테스트시 날씨"
+        session = Mock(get=AsyncMock(side_effect=RuntimeError("synthetic failure")))
+        with patch.object(api_module, "async_get_clientsession", return_value=session):
+            with self.assertRaisesRegex(RuntimeError, "synthetic failure"):
+                asyncio.run(api.update())
+        self.assertIs(api.result, previous_result)
+        self.assertEqual(api.result_area, "테스트시 날씨")
+
+    def test_restored_location_payload_does_not_inherit_humidity_without_a_known_area(self):
+        api = self._location_api({"Locality": "테스트시"})
+        coordinator = coordinator_module.NWeatherDataUpdateCoordinator(FakeHass(), api, api.entry)
+        coordinator._store.data = {
+            "saved_at": 1000.0, "result": {"Humidity": "61"},
+            "forecast": [], "forecast_hour": [], "weathertype": "맑음",
+        }
+        with patch.object(coordinator_module, "time", return_value=1100.0):
+            self.assertTrue(asyncio.run(coordinator._async_restore_recent()))
+        self.assertEqual(api.result["Humidity"], "61")
+        self.assertIsNone(api.result_area)
+        self._update_api(api)
+        self.assertIsNone(api.result["Humidity"])
+
+    def test_location_ids_device_metadata_and_callbacks_do_not_follow_the_phone(self):
+        api = self._location_api()
+        coordinator = types.SimpleNamespace(last_update_success=True)
+        sensor = sensor_module.NWeatherSensor(const_module.NOW_TEMP, api, coordinator)
+        weather = weather_module.NWeatherMain(
+            ["Naver Weather Custom", "네이버날씨Custom", "", ""], api, coordinator
+        )
+        self.assertEqual(sensor.unique_id, "location_entry:NowTemp")
+        self.assertEqual(weather.unique_id, "location_entry:Naver Weather Custom")
+        callback = Mock()
+        api.register_update_state(sensor.unique_id, callback)
+        for locality in ("테스트시", "다른시"):
+            api.hass.states[api.location_entity] = types.SimpleNamespace(attributes={
+                "Locality": locality, "Sub Locality": "가상동"
+            })
+            api.device_update("NowTemp")
+            self.assertEqual(sensor.unique_id, "location_entry:NowTemp")
+            self.assertEqual(sensor.device_info["identifiers"], {(const_module.DOMAIN, "location_entry")})
+            self.assertEqual(sensor.device_info["name"], "Naver Weather Custom 현재 위치")
+            self.assertNotIn("configuration_url", sensor.device_info)
+        self.assertEqual(callback.call_count, 2)
+        with patch.object(api, "set_data", side_effect=api.entry.data.__setitem__):
+            self.assertEqual(weather.name, "Naver Weather Custom 1")
+            self.assertEqual(weather.name, "현재 위치")
+
+    def test_both_forecast_sensors_are_added_without_extending_weather_info(self):
+        api = api_module.NWeatherAPI(FakeHass(), FakeEntry(), 3)
+        coordinator = types.SimpleNamespace(last_update_success=True)
+        hass = types.SimpleNamespace(data={const_module.DOMAIN: {
+            "api": {api.entry.entry_id: api},
+            "coordinators": {api.entry.entry_id: coordinator},
+        }})
+        add_entities = Mock()
+        asyncio.run(sensor_module.async_setup_entry(hass, api.entry, add_entities))
+        entities = add_entities.call_args.args[0]
+        self.assertEqual(len(const_module.WEATHER_INFO), 31)
+        self.assertEqual(len(entities), 33)
+        self.assertEqual([entity.device[0] for entity in entities[:31]], list(const_module.WEATHER_INFO))
+        for entity, key, name, icon in (
+            (entities[-2], "ForecastHourly", "시간별 예보", "mdi:clock-outline"),
+            (entities[-1], "ForecastDaily", "일별 예보", "mdi:calendar"),
+        ):
+            with self.subTest(key=key):
+                self.assertIsInstance(entity, sensor_module.NWeatherSensor)
+                self.assertIsInstance(entity, sensor_module.NWeatherForecastSensor)
+                self.assertEqual(entity.unique_id, f"날씨:{key}")
+                with patch.object(api, "set_data", side_effect=api.entry.data.__setitem__):
+                    self.assertEqual(entity.name, f"naver_weather_custom {key} 3")
+                    self.assertEqual(entity.name, name)
+                self.assertEqual(entity.icon, icon)
+                self.assertIsNone(entity.device_class)
+                self.assertIsNone(entity.unit_of_measurement)
+                self.assertEqual(entity._unrecorded_attributes, frozenset({"forecast"}))
+                self.assertEqual(entity.extra_state_attributes, {"forecast": []})
+                self.assertIsNone(entity.state)
+
+    def test_forecast_sensors_use_the_registered_weather_converter_and_first_condition(self):
+        api = self._location_api({"Locality": "테스트시"})
+        api.forecast_hour = [{"datetime": "2030-01-01T00:00:00+00:00", "native_temperature": 20}]
+        api.forecast = [{
+            "datetime": "2030-01-01T00:00:00+00:00", "temperature": 22,
+            "templow": 12, "condition_am": "sunny", "condition_pm": "rainy",
+            "rain_rate_am": 20, "rain_rate_pm": 40,
+            "weathertype_am": "wt1", "weathertype_pm": "wt9",
+        }]
+        coordinator = types.SimpleNamespace(last_update_success=True)
+        weather = weather_module.NWeatherMain(
+            ["Naver Weather Custom", "네이버날씨Custom", "", ""], api, coordinator
+        )
+        api.weather_entity = weather
+        for key, native in (
+            ("ForecastHourly", weather_module.build_hourly_forecast(api)),
+            ("ForecastDaily", weather_module.build_daily_forecast(api, False)),
+        ):
+            entity = sensor_module.NWeatherForecastSensor([key, "예보"], api, coordinator)
+            for converted in ([], [{}], [{"condition": None}], [{"condition": "rainy", "temperature": 71.6}]):
+                with self.subTest(key=key, converted=converted), patch.object(
+                    weather, "_convert_forecast", return_value=converted, create=True
+                ) as convert:
+                    self.assertIs(entity.extra_state_attributes["forecast"], converted)
+                    convert.assert_called_once_with(native)
+                    self.assertEqual(entity.state, converted[0].get("condition") if converted else None)
+        twice_daily = weather_module.build_daily_forecast(api, True)
+        self.assertEqual([row["condition"] for row in twice_daily], ["sunny", "rainy"])
+        self.assertEqual([row["is_daytime"] for row in twice_daily], [True, False])
+        self.assertEqual(weather._forecast(2), twice_daily)
+        self.assertEqual(weather._condition_daily("sunny", "rainy"), "rainy")
+
+    def test_weather_registration_updates_listeners_and_clears_only_its_own_converter(self):
+        api = self._location_api()
+        coordinator = types.SimpleNamespace(async_update_listeners=Mock())
+        weather = weather_module.NWeatherMain(["Weather", "날씨"], api, coordinator)
+        other = weather_module.NWeatherMain(["OtherWeather", "다른 날씨"], api, coordinator)
+        asyncio.run(weather.async_added_to_hass())
+        self.assertIs(api.weather_entity, weather)
+        coordinator.async_update_listeners.assert_called_once_with()
+        asyncio.run(other.async_added_to_hass())
+        self.assertIs(api.weather_entity, other)
+        asyncio.run(weather.async_will_remove_from_hass())
+        self.assertIs(api.weather_entity, other)
+        self.assertEqual(coordinator.async_update_listeners.call_count, 2)
+        asyncio.run(other.async_will_remove_from_hass())
+        self.assertIsNone(api.weather_entity)
+        self.assertEqual(coordinator.async_update_listeners.call_count, 3)
+
+    def test_location_user_flow_ignores_area_and_rejects_invalid_locality(self):
+        hass = FakeHass()
+        hass.states["sensor.synthetic_location"] = types.SimpleNamespace(attributes={"Locality": "테스트시 &"})
+        flow = config_flow_module.ConfigFlow()
+        with patch.object(flow, "hass", hass, create=True):
+            result = asyncio.run(flow.async_step_user({
+                "location_entity": "sensor.synthetic_location", "area": "ignored", "today": True,
+            }))
+        self.assertEqual(result, {
+            "type": "create_entry", "title": "현재 위치",
+            "data": {"location_entity": "sensor.synthetic_location", "today": True},
+        })
+        self.assertEqual(flow.unique_id, "location:sensor.synthetic_location")
+        for attributes in (None, {}, {"Locality": "N/A"}, {"Locality": "& &"}, {"Locality": 1}):
+            with self.subTest(attributes=attributes):
+                hass.states.clear()
+                if attributes is not None:
+                    hass.states["sensor.synthetic_location"] = types.SimpleNamespace(attributes=attributes)
+                with patch.object(flow, "hass", hass, create=True):
+                    result = asyncio.run(flow.async_step_user({"location_entity": "sensor.synthetic_location"}))
+                self.assertEqual(result["type"], "form")
+                self.assertEqual(result["errors"], {"location_entity": "invalid_location_entity"})
+                self.assertEqual(result["data_schema"]["location_entity"], {"domain": "sensor"})
+
+    def test_area_duplicate_detection_skips_data_and_options_location_entries(self):
+        for storage in ("data", "options"):
+            entry = FakeEntry("날씨")
+            getattr(entry, storage)["location_entity"] = "sensor.synthetic_location"
+            flow = config_flow_module.ConfigFlow()
+            with self.subTest(storage=storage), patch.object(flow, "_async_current_entries", return_value=[entry], create=True):
+                self.assertFalse(flow._area_is_configured("날씨"))
+                result = asyncio.run(flow.async_step_user({"area": " "}))
+                self.assertEqual(result["type"], "create_entry")
+
+    def test_location_config_translations_include_korean_field_and_error(self):
+        for name in ("strings.json", "translations/en.json", "translations/ko.json"):
+            with self.subTest(name=name):
+                config = json.loads((INTEGRATION / name).read_text(encoding="utf-8"))["config"]
+                label = config["step"]["user"]["data"]["location_entity"]
+                error = config["error"]["invalid_location_entity"]
+                self.assertTrue(label)
+                self.assertIn("Locality", error)
+                if name == "translations/ko.json":
+                    self.assertIn("위치 센서", label)
+                    self.assertIn("지역", label)
+                    self.assertIn("무시", label)
+                    self.assertTrue(any("가" <= char <= "힣" for char in error))
 
 
 if __name__ == "__main__":

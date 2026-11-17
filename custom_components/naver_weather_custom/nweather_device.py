@@ -23,7 +23,7 @@ class NWeatherBase:
         """Init device class."""
         self.device = device
         self.api = api
-        self.area = api.area
+        self.area = api.entity_key
         self._attr_unique_id = f"{self.area}:{self.device[0]}"
         # CoordinatorEntity's Entity MRO supplies the public ``device_info``
         # property.  Set its native attribute explicitly so the coordinator
@@ -36,6 +36,9 @@ class NWeatherBase:
             "sw_version": self.api.version,
             "configuration_url": BSE_URL.format(self.area),
         }
+        if self.api.location_entity is not None:
+            self._attr_device_info["name"] = f"{self.api.brand_name} 현재 위치"
+            self._attr_device_info.pop("configuration_url")
         self.api.init_device(self.unique_id)
         self.register = self.api.get_device(self.unique_id, DEVICE_REG)
         self.unregister = self.api.get_device(self.unique_id, DEVICE_UNREG)

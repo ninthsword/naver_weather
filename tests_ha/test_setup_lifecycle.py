@@ -1,14 +1,18 @@
 """Exercise actual HA setup, refresh, forecast services, and unload offline."""
 
+from asyncio import Event
 from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
 import pytest
 from aiohttp import ClientResponseError, RequestInfo
-from homeassistant.config_entries import ConfigEntryState
-from homeassistant.const import STATE_UNAVAILABLE
+from homeassistant.config_entries import SOURCE_USER, ConfigEntryState
+from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN
+from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.util import dt as dt_util
+from homeassistant.util.unit_system import US_CUSTOMARY_SYSTEM
 from multidict import CIMultiDict, CIMultiDictProxy
 from pytest_homeassistant_custom_component.common import (
     MockConfigEntry,
@@ -18,7 +22,17 @@ from yarl import URL
 
 from custom_components.naver_weather_custom import coordinator as coordinator_module
 from custom_components.naver_weather_custom.api_nweather import NWeatherAPI
-from custom_components.naver_weather_custom.const import CONF_AREA, DOMAIN, NOW_TEMP
+from custom_components.naver_weather_custom.const import (
+    BSE_URL,
+    CONF_AREA,
+    CONF_LOCATION_ENTITY,
+    CONF_TODAY,
+    DOMAIN,
+    NOW_TEMP,
+    WEATHER_INFO,
+)
+from custom_components.naver_weather_custom.sensor import NWeatherForecastSensor
+from custom_components.naver_weather_custom.weather import NWeatherMain
 
 
 @pytest.mark.asyncio
@@ -213,4 +227,222 @@ async def test_successful_refresh_is_saved_for_the_next_start(hass, hass_storage
     assert saved["saved_at"] == 4321.0 and saved["result"] == {NOW_TEMP[0]: 7.5}
     assert await hass.config_entries.async_unload(entry.entry_id)
     await hass.async_block_till_done()
+
+
+def _set_forecast_payload(api):
+    """Populate both forecast periods with synthetic data in native units."""
+    api.result = {NOW_TEMP[0]: 21, "Condition": "rainy", "Humidity": "61"}
+    api.forecast_hour = [{
+        "datetime": datetime(2030, 1, 1, hour, tzinfo=UTC),
+        "condition": "rainy", "native_temperature": 23 + hour,
+        "native_wind_speed": 2, "native_precipitation": 1.5,
+        "precipitation_probability": 40, "humidity": 61,
+        "wind_bearing": 135, "weathertype_hour": "wt9",
+    } for hour in range(2)]
+    api.forecast = [{
+        "datetime": datetime(2030, 1, day, tzinfo=UTC),
+        "condition_am": "sunny", "condition_pm": "rainy",
+        "temperature": 22 + day, "templow": 12,
+        "rain_rate_am": 20, "rain_rate_pm": 40,
+        "weathertype_am": "wt1", "weathertype_pm": "wt9",
+    } for day in (1, 2)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sensors_first", [True, False])
+@pytest.mark.parametrize("imperial", [False, True])
+async def test_forecast_sensors_match_services_on_setup_and_clear_on_weather_removal(
+    hass, sensors_first, imperial
+):
+    if imperial:
+        hass.config.units = US_CUSTOMARY_SYSTEM
+    entry = MockConfigEntry(domain=DOMAIN, data={CONF_AREA: "날씨"}, unique_id="synthetic")
+    entry.add_to_hass(hass)
+    calls = 0
+    forecasts_ready, weather_ready = Event(), Event()
+    added_forecasts = 0
+    original_weather_added = NWeatherMain.async_added_to_hass
+    original_sensor_added = NWeatherForecastSensor.async_added_to_hass
+
+    async def update(api):
+        nonlocal calls
+        calls += 1
+        _set_forecast_payload(api)
+
+    async def weather_added(entity):
+        if sensors_first:
+            await forecasts_ready.wait()
+        await original_weather_added(entity)
+        weather_ready.set()
+
+    async def sensor_added(entity):
+        nonlocal added_forecasts
+        if not sensors_first:
+            await weather_ready.wait()
+        await original_sensor_added(entity)
+        added_forecasts += 1
+        if added_forecasts == 2:
+            forecasts_ready.set()
+
+    with patch.object(NWeatherAPI, "update", update), patch.object(
+        NWeatherMain, "async_added_to_hass", weather_added
+    ), patch.object(NWeatherForecastSensor, "async_added_to_hass", sensor_added):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+        api = hass.data[DOMAIN]["api"][entry.entry_id]
+        registry = er.async_get(hass)
+        weather_id = registry.async_get_entity_id("weather", DOMAIN, "날씨:Naver Weather Custom")
+        assert weather_id is not None and api.weather_entity is not None
+        sensor_ids = []
+        for period, key in (("hourly", "ForecastHourly"), ("daily", "ForecastDaily")):
+            entity_id = registry.async_get_entity_id("sensor", DOMAIN, f"날씨:{key}")
+            assert entity_id is not None
+            sensor_ids.append(entity_id)
+            state = hass.states.get(entity_id)
+            assert state is not None and state.state == "rainy"
+            forecasts = await hass.services.async_call(
+                "weather", "get_forecasts", {"entity_id": weather_id, "type": period},
+                blocking=True, return_response=True,
+            )
+            assert forecasts is not None
+            forecast = forecasts[weather_id]["forecast"]
+            assert state.attributes["forecast"] == forecast and len(forecast) == 2
+            first = forecast[0]
+            assert "temperature" in first and "native_temperature" not in first
+            if period == "hourly":
+                assert {"precipitation", "wind_speed", "weathertype_hour", "humidity"} <= first.keys()
+                assert "native_precipitation" not in first and "native_wind_speed" not in first
+                if imperial:
+                    assert first["temperature"] != 23 and first["precipitation"] != 1.5
+                else:
+                    assert first["temperature"] == 23 and first["wind_speed"] == 7.2
+                    assert first["precipitation"] == 1.5
+            else:
+                assert {"templow", "weathertype_am", "weathertype_pm", "rain_rate_am", "rain_rate_pm"} <= first.keys()
+                assert "native_templow" not in first
+        assert calls == 1
+
+        registry.async_remove(weather_id)
+        await hass.async_block_till_done()
+        assert api.weather_entity is None and calls == 1
+        for entity_id in sensor_ids:
+            state = hass.states.get(entity_id)
+            assert state is not None and state.attributes["forecast"] == []
+            assert state.state == STATE_UNKNOWN
+        assert await hass.config_entries.async_unload(entry.entry_id)
+        await hass.async_block_till_done()
+
+
+@pytest.mark.asyncio
+async def test_location_queries_change_on_refresh_while_all_entry_ids_stay_stable(hass):
+    location_entity = "sensor.synthetic_location"
+    hass.states.async_set(location_entity, "synthetic", {"Locality": "테스트시", "Sub Locality": "첫동"})
+    moving = MockConfigEntry(domain=DOMAIN, data={CONF_LOCATION_ENTITY: location_entity, CONF_TODAY: True},
+                             unique_id=f"location:{location_entity}")
+    fixed = MockConfigEntry(domain=DOMAIN, data={CONF_AREA: "고정시"}, unique_id="고정시")
+    moving.add_to_hass(hass)
+    fixed.add_to_hass(hass)
+    queries = []
+
+    async def update(api):
+        queries.append((api.entry.entry_id, api.area))
+        _set_forecast_payload(api)
+
+    with patch.object(NWeatherAPI, "update", update):
+        # Setting up the first entry sets up the component, which loads every entry of the domain.
+        assert await hass.config_entries.async_setup(moving.entry_id)
+        await hass.async_block_till_done()
+        assert moving.state is ConfigEntryState.LOADED and fixed.state is ConfigEntryState.LOADED
+        registry = er.async_get(hass)
+        moving_ids = {item.unique_id: item.entity_id for item in er.async_entries_for_config_entry(registry, moving.entry_id)}
+        fixed_ids = {item.unique_id: item.entity_id for item in er.async_entries_for_config_entry(registry, fixed.entry_id)}
+        keys = {*WEATHER_INFO, "ForecastHourly", "ForecastDaily", "Naver Weather Custom"}
+        assert set(moving_ids) == {f"location_{moving.entry_id}:{key}" for key in keys}
+        assert set(fixed_ids) == {f"고정시 날씨:{key}" for key in keys}
+        devices = dr.async_get(hass)
+        moving_device = devices.async_get_device_by_identifier((DOMAIN, f"location_{moving.entry_id}"), moving.entry_id)
+        fixed_device = devices.async_get_device_by_identifier((DOMAIN, "고정시 날씨"), fixed.entry_id)
+        assert moving_device is not None and moving_device.name == "Naver Weather Custom 현재 위치"
+        assert moving_device.configuration_url is None
+        assert fixed_device is not None and fixed_device.name == "Naver Weather Custom 고정시 날씨"
+        assert fixed_device.configuration_url == BSE_URL.format("고정시 날씨")
+        weather_id = moving_ids[f"location_{moving.entry_id}:Naver Weather Custom"]
+        assert hass.states.get(weather_id) is not None
+        moving_weather = hass.data[DOMAIN]["api"][moving.entry_id].weather_entity
+        assert moving_weather is not None and moving_weather.entity_id == weather_id
+        assert moving_weather.name == "현재 위치"
+
+        hass.states.async_set(location_entity, "synthetic", {"Locality": "다른시", "Sub Locality": "다음동"})
+        coordinator = hass.data[DOMAIN]["coordinators"][moving.entry_id]
+        await coordinator.async_refresh()
+        await hass.async_block_till_done()
+        assert sorted(queries[:2]) == sorted([(moving.entry_id, "테스트시 첫동 날씨"), (fixed.entry_id, "고정시 날씨")])
+        assert queries[2:] == [(moving.entry_id, "다른시 다음동 날씨")]
+        assert moving_ids == {item.unique_id: item.entity_id for item in er.async_entries_for_config_entry(registry, moving.entry_id)}
+        assert fixed_ids == {item.unique_id: item.entity_id for item in er.async_entries_for_config_entry(registry, fixed.entry_id)}
+        for entry in (moving, fixed):
+            assert await hass.config_entries.async_unload(entry.entry_id)
+        await hass.async_block_till_done()
+
+
+@pytest.mark.asyncio
+async def test_location_config_flow_stores_only_sensor_and_today_and_rejects_duplicates(hass):
+    location_entity = "sensor.synthetic_location"
+    hass.states.async_set(location_entity, "synthetic", {"Locality": "테스트시 &"})
+    with patch("custom_components.naver_weather_custom.async_setup_entry", return_value=True):
+        flow = await hass.config_entries.flow.async_init(DOMAIN, context={"source": SOURCE_USER})
+        assert flow["type"] is FlowResultType.FORM
+        result = await hass.config_entries.flow.async_configure(flow["flow_id"], {
+            CONF_LOCATION_ENTITY: location_entity, CONF_AREA: "ignored", CONF_TODAY: True,
+        })
+        assert result["type"] is FlowResultType.CREATE_ENTRY
+        entry = result["result"]
+        assert entry.title == "현재 위치" and entry.unique_id == f"location:{location_entity}"
+        assert entry.data == {CONF_LOCATION_ENTITY: location_entity, CONF_TODAY: True}
+        await hass.async_block_till_done()
+        flow = await hass.config_entries.flow.async_init(DOMAIN, context={"source": SOURCE_USER})
+        assert flow["type"] is FlowResultType.FORM
+        duplicate = await hass.config_entries.flow.async_configure(flow["flow_id"], {CONF_LOCATION_ENTITY: location_entity})
+        assert duplicate["type"] is FlowResultType.ABORT
+        assert duplicate["reason"] == "already_configured"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("attributes", [None, {}, {"Locality": ""}, {"Locality": " n/a "},
+                                        {"Locality": "& &"}, {"Locality": 1}, {"Sub Locality": "가상동"}])
+async def test_location_config_flow_requires_an_existing_sensor_with_normalized_locality(hass, attributes):
+    location_entity = "sensor.synthetic_location"
+    if attributes is not None:
+        hass.states.async_set(location_entity, "synthetic", attributes)
+    flow = await hass.config_entries.flow.async_init(DOMAIN, context={"source": SOURCE_USER})
+    assert flow["type"] is FlowResultType.FORM
+    result = await hass.config_entries.flow.async_configure(flow["flow_id"], {CONF_LOCATION_ENTITY: location_entity})
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {CONF_LOCATION_ENTITY: "invalid_location_entity"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("location_first", [True, False])
+@pytest.mark.parametrize("fixed_area", ["", "날씨"])
+async def test_location_and_default_fixed_area_config_flows_coexist_in_either_order(hass, location_first, fixed_area):
+    location_entity = "sensor.synthetic_location"
+    hass.states.async_set(location_entity, "synthetic", {"Locality": "테스트시"})
+    inputs = [{CONF_LOCATION_ENTITY: location_entity}, {CONF_AREA: fixed_area}]
+    if not location_first:
+        inputs.reverse()
+    with patch("custom_components.naver_weather_custom.async_setup_entry", return_value=True):
+        entries = []
+        for user_input in inputs:
+            flow = await hass.config_entries.flow.async_init(DOMAIN, context={"source": SOURCE_USER})
+            assert flow["type"] is FlowResultType.FORM
+            result = await hass.config_entries.flow.async_configure(flow["flow_id"], user_input)
+            assert result["type"] is FlowResultType.CREATE_ENTRY
+            entries.append(result["result"])
+            await hass.async_block_till_done()
+        assert {entry.unique_id for entry in entries} == {f"location:{location_entity}", "날씨"}
+        for entry in entries:
+            if entry.unique_id == "날씨":
+                assert entry.title == "날씨" and entry.data == {CONF_AREA: "날씨", CONF_TODAY: False}
+            else:
+                assert entry.title == "현재 위치" and entry.data == {CONF_LOCATION_ENTITY: location_entity, CONF_TODAY: False}
 
