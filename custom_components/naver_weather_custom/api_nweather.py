@@ -4,7 +4,7 @@ import logging
 import re
 from collections.abc import Iterable, Sequence
 from datetime import datetime, timedelta, timezone
-from typing import Literal, Protocol, overload
+from typing import TYPE_CHECKING, Literal, Protocol, overload
 from urllib.parse import urldefrag, urljoin, urlsplit
 
 from aiohttp import ClientError, ClientTimeout
@@ -21,6 +21,7 @@ from .const import (
     CONDITIONS,
     CONF_AREA,
     CONF_BROWSER_URL,
+    CONF_LOCATION_ENTITY,
     CONF_TODAY,
     DEVICE_REG,
     DEVICE_UNREG,
@@ -57,6 +58,9 @@ from .const import (
     WIND_DIR,
     WIND_SPEED,
 )
+
+if TYPE_CHECKING:
+    from .weather import NWeatherMain
 
 
 class HtmlNode(Protocol):
@@ -509,6 +513,20 @@ def filter_daily_forecast_rows(
     ]
 
 
+def location_part(value: object) -> str | None:
+    """Normalize a location attribute without allowing search-query delimiters."""
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    if not value or value.casefold() == "n/a":
+        return None
+    value = "".join(
+        char for char in value
+        if char.isalpha() or char.isdigit() or char.isspace() or char in "-·."
+    )
+    return " ".join(value.split()) or None
+
+
 def re2num(val):
     if val is None:
         return None
@@ -608,6 +626,9 @@ class NWeatherAPI:
         self.entry = entry
         self.count = count
         self.result = {}
+        self.result_area: str | None = None
+        self._last_location_area: str | None = None
+        self.weather_entity: NWeatherMain | None = None
         self.forecast = []
         self.forecast_hour = []
         self.weathertype = ""
@@ -627,11 +648,36 @@ class NWeatherAPI:
     @property
     def area(self):
         """Return area."""
+        location_entity = self.location_entity
+        if location_entity is not None:
+            state = self.hass.states.get(location_entity)
+            locality = location_part(state.attributes.get("Locality")) if state else None
+            if locality is None:
+                return self._last_location_area
+            sub_locality = location_part(state.attributes.get("Sub Locality"))
+            self._last_location_area = (
+                f"{locality} {sub_locality} 날씨" if sub_locality else f"{locality} 날씨"
+            )
+            return self._last_location_area
         data = self.entry.options.get(CONF_AREA, self.entry.data.get(CONF_AREA))
         if data == "날씨":
             return data
         else:
             return data + " 날씨"
+
+    @property
+    def location_entity(self) -> str | None:
+        """Return the location sensor selected for this entry, if any."""
+        return self.entry.data.get(
+            CONF_LOCATION_ENTITY, self.entry.options.get(CONF_LOCATION_ENTITY)
+        )
+
+    @property
+    def entity_key(self):
+        """Keep location-entry identities independent of the current area."""
+        if self.location_entity is not None:
+            return "location_" + self.entry.entry_id
+        return self.area
 
     def set_data(self, name, value):
         """Set entry data."""
@@ -672,7 +718,7 @@ class NWeatherAPI:
 
     def device_update(self, device_id):
         """Update device state."""
-        unique_id = self.area + ":" + device_id
+        unique_id = f"{self.entity_key}:{device_id}"
         device_update = self.unique.get(unique_id, {}).get(DEVICE_UPDATE)
         if device_update is not None:
             device_update()
@@ -763,7 +809,10 @@ class NWeatherAPI:
     async def update(self):
         """Update function for updating api information."""
         try:
-            url = BSE_URL.format(self.area)
+            area = self.area
+            if area is None:
+                raise ValueError(f"위치 센서 {self.location_entity}의 Locality 속성이 없습니다.")
+            url = BSE_URL.format(area)
             url_air = url.replace("날씨", "미세먼지")
 
             hdr = {
@@ -839,8 +888,13 @@ class NWeatherAPI:
             TodayFeelTemp = re2float(re2key("체감", summ))
 
             # 습도
+            previous_humidity = (
+                self.result.get(NOW_HUMI[0])
+                if self.location_entity is None or self.result_area == area
+                else None
+            )
             Humidity      = retain_previous_humidity(
-                re2num(re2key("습도", summ)), self.result.get(NOW_HUMI[0])
+                re2num(re2key("습도", summ)), previous_humidity
             )
 
             # 현재풍속/풍향
@@ -1121,6 +1175,7 @@ class NWeatherAPI:
                 PUBLIC_TIME_W[0]: publication_times[PUBLIC_TIME_W[0]],
                 "airOfferInfoUpdate": offerInfo
             }
+            self.result_area = area
             
             _LOGGER.info(f"[{BRAND}] Update weather information -> {self.result}")
             

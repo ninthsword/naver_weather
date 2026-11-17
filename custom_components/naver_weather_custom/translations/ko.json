@@ -14,9 +14,13 @@
                 "description": "\uB124\uC774\uBC84 \uB0A0\uC528\uB97C \uCD94\uAC00\uD558\uC2DC\uACA0\uC2B5\uB2C8\uAE4C?",
                 "data": {
                     "area": "\uC9C0\uC5ED : \uB0A0\uC528\uB97C \uC54C\uACE0\uC2F6\uC740 \uC9C0\uC5ED\uC758 \uC774\uB984",
-                    "today": "\uC8FC\uAC04\uC608\uBCF4\uC5D0 \uC624\uB298\uB0A0\uC528 \uD3EC\uD568"
+                    "today": "\uC8FC\uAC04\uC608\uBCF4\uC5D0 \uC624\uB298\uB0A0\uC528 \uD3EC\uD568",
+                    "location_entity": "위치 센서 (선택 사항, 선택하면 지역 입력은 무시됩니다)"
                 }
             }
+        },
+        "error": {
+            "invalid_location_entity": "Locality 속성이 있는 위치 센서를 선택하세요."
         }
     },
     "options": {
