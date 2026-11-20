@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo
 from playwright.sync_api import (
     APIRequestContext,
     Browser,
+    CDPSession,
     ConsoleMessage,
     Error,
     Locator,
@@ -392,8 +393,12 @@ def content_moving(content: Locator, screen: str) -> None:
 
 def within(page: Page, ms: int, check: Callable[[], bool], reason: str) -> None:
     deadline = time.monotonic() + ms / 1000
-    while not check():
-        if time.monotonic() >= deadline:
+    while True:
+        started = time.monotonic()
+        # A sample counts only if it was taken before the deadline.
+        if check() and started <= deadline:
+            return
+        if time.monotonic() > deadline:
             raise StepError(reason)
         page.wait_for_timeout(10)
 
@@ -598,6 +603,15 @@ def watch_card_errors(page: Page, errors: list[str]) -> None:
     page.on("pageerror", on_error)
 
 
+def touch_swipe(session: CDPSession, locator: Locator) -> None:
+    start, end, y = drag_points(locator)
+    session.send("Input.dispatchTouchEvent", {"type": "touchStart", "touchPoints": [{"x": start, "y": y}]})
+    for step in range(1, 9):
+        x = start + (end - start) * step / 8
+        session.send("Input.dispatchTouchEvent", {"type": "touchMove", "touchPoints": [{"x": x, "y": y}]})
+    session.send("Input.dispatchTouchEvent", {"type": "touchEnd", "touchPoints": []})
+
+
 def verify_touch(browser: Browser, base: str, shots: Shots, errors: list[str]) -> None:
     context = browser.new_context(viewport=PHONE, locale="ko-KR", timezone_id="Asia/Seoul",
                                   has_touch=True, is_mobile=True)
@@ -611,15 +625,14 @@ def verify_touch(browser: Browser, base: str, shots: Shots, errors: list[str]) -
         hourly = card.locator(".hourly-grid")
         temperature(hourly, "21.0°", "card A before touch swipe")
         temperature(current, "21.5°", "card A before touch swipe")
-        start, end, y = drag_points(current)
         session = context.new_cdp_session(page)
-        session.send("Input.dispatchTouchEvent", {"type": "touchStart", "touchPoints": [{"x": start, "y": y}]})
-        for step in range(1, 9):
-            x = start + (end - start) * step / 8
-            session.send("Input.dispatchTouchEvent", {"type": "touchMove", "touchPoints": [{"x": x, "y": y}]})
-        session.send("Input.dispatchTouchEvent", {"type": "touchEnd", "touchPoints": []})
+        touch_swipe(session, current)
         verify_switched(current, hourly, "card A after touch swipe")
         shots.card(card, "card-a-touch-390")
+        # A touch swipe on the forecast rows pages the hourly section (not only the current section).
+        touch_swipe(session, hourly)
+        page.wait_for_timeout(SETTLE_MS)
+        track_on_page(hourly.locator(".pages-track"), hourly, 1, "hourly page 2 after touch swipe")
     finally:
         context.close()
 

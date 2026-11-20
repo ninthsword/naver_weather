@@ -28,6 +28,7 @@ const STYLE = `
     color: var(--primary-text-color);
     font: inherit;
     overflow: hidden;
+    overflow: clip;
   }
   .section { padding: 6px 0; min-width: 0; }
   .forecast-section { border-top: 1px solid var(--divider-color); }
@@ -100,8 +101,8 @@ const STYLE = `
   .chip-icon { --mdc-icon-size: 17px; }
   .chip-row { column-gap: clamp(4px, 2cqw, 12px); }
   .rainfall { text-align: start; color: var(--secondary-text-color); }
-  .hourly-grid, .daily-list { display: block; overflow: hidden; }
-  .pages-track { display: flex; align-items: flex-start; transition: transform 300ms ease-out; }
+  .hourly-grid, .daily-list { display: block; overflow: hidden; overflow: clip; touch-action: pan-y; }
+  .pages-track { display: flex; align-items: flex-start; direction: ltr; touch-action: pan-y; transition: transform 300ms ease-out; }
   .hourly-page { flex: 0 0 100%; display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); }
   .daily-page { flex: 0 0 100%; display: block; }
   .slide-content { transition: transform var(--slide-ms, 200ms) ease-out; }
@@ -221,6 +222,7 @@ class NaverWeatherCard extends HTMLElement {
 
   setConfig(config) {
     this.#config = model.validateConfig(config);
+    for (const slide of Object.values(this.#slides)) slide.drop();
     this.#entityId = undefined;
     this.#sync();
   }
@@ -427,10 +429,9 @@ class NaverWeatherCard extends HTMLElement {
       const { entities } = this.#config;
       return node && { node, index: entities.indexOf(this.#entityId), count: entities.length };
     }
-    const forecast = this.#forecasts[surface];
+    // Use the track as drawn: rows that changed since the last render are drawn after the drag.
     const node = this.#body.querySelector(`.${surface}-section .pages-track`);
-    return forecast && node
-      && { node, index: forecast.page, count: Math.ceil(forecast.rows.length / PAGE_SIZE[surface]) };
+    return node && { node, index: Number(node.dataset.page), count: node.childElementCount };
   }
 
   #dragTransform(surface, index, offset) {
@@ -696,8 +697,11 @@ class NaverWeatherCard extends HTMLElement {
     const grid = element("div", type === "hourly" ? "hourly-grid" : "daily-list");
     const track = element("div", "pages-track");
     track.style.transform = pageTransform(forecast.page, 0);
-    for (const rows of pages) {
+    track.dataset.page = String(forecast.page);
+    for (const [index, rows] of pages.entries()) {
       const page = element("div", `${type}-page`);
+      // Pages outside the viewport are only clipped visually; keep them from screen readers too.
+      if (index !== forecast.page) page.setAttribute("aria-hidden", "true");
       for (const row of rows) {
         page.append(type === "hourly" ? this.#hour(row ?? {}, zone) : this.#day(row ?? {}, now, zone, workdays));
       }
