@@ -120,6 +120,17 @@ export function pageAfterRows(page, rowCount, size) {
   return Math.min(page, Math.max(0, Math.ceil(rowCount / size) - 1));
 }
 
+export function dragOffset(dx, index, count) {
+  if (!Number.isFinite(dx)) return 0;
+  const pastEnd = count <= 1 || (dx > 0 && index <= 0) || (dx < 0 && index >= count - 1);
+  return pastEnd ? dx / 3 : dx;
+}
+
+export function settleTarget(dx, index, count) {
+  const target = !Number.isFinite(dx) ? index : dx < -40 ? index + 1 : dx > 40 ? index - 1 : index;
+  return Math.min(Math.max(target, 0), Math.max(count - 1, 0));
+}
+
 function validIconPath(value) {
   return typeof value === "string"
     && /^\/(?!\/)[A-Za-z0-9_./-]*$/.test(value)

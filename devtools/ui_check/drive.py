@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import time
+from collections.abc import Callable
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -35,6 +36,12 @@ SEOUL = ZoneInfo("Asia/Seoul")
 # HA 2026.10 opens its 둘러보기 home dashboard at "/", so the check uses its own storage-mode dashboard.
 DASHBOARD = "naver-weather-check"
 WEATHER_VIEW = f"/{DASHBOARD}/weather-check"
+DRAG_PX = 100
+SETTLE_MS = 600
+TRANSLATE_X = """(node) => {
+    const transform = getComputedStyle(node).transform;
+    return transform === "none" ? 0 : new DOMMatrixReadOnly(transform).m41;
+}"""
 
 
 class StepError(RuntimeError):
@@ -338,12 +345,84 @@ def drag_points(locator: Locator) -> tuple[float, float, float]:
     return box["x"] + box["width"] - 4, box["x"] + 4, box["y"] + box["height"] / 2
 
 
-def mouse_drag(page: Page, locator: Locator) -> None:
-    start, end, y = drag_points(locator)
-    page.mouse.move(start, y)
+def translate_x(locator: Locator) -> float:
+    return float(locator.evaluate(TRANSLATE_X))
+
+
+def box_width(locator: Locator) -> float:
+    return float(locator.evaluate("(node) => node.getBoundingClientRect().width"))
+
+
+def paused_drag(page: Page, surface: Locator, moved: Locator, screen: str,
+                hold: Callable[[], None] | None = None) -> None:
+    """Press, move 100 px left in steps, check that `moved` followed the mouse, then release."""
+    surface.scroll_into_view_if_needed()
+    box = surface.bounding_box()
+    if box is None or box["width"] <= DRAG_PX + 20:
+        raise StepError(f"{screen}: swipe surface is absent or too narrow for a {DRAG_PX} px drag")
+    x, y = box["x"] + box["width"] / 2 + DRAG_PX / 2, box["y"] + box["height"] / 2
+    before = translate_x(moved)
+    page.mouse.move(x, y)
     page.mouse.down()
-    page.mouse.move(end, y, steps=8)
+    page.mouse.move(x - DRAG_PX, y, steps=10)
+    shift = translate_x(moved) - before
+    if hold:
+        hold()
     page.mouse.up()
+    if not -DRAG_PX - 10 <= shift <= -DRAG_PX + 10:
+        raise StepError(f"{screen}: content moved {shift:.1f} px during a {DRAG_PX} px drag")
+
+
+def track_on_page(track: Locator, viewport: Locator, index: int, screen: str) -> None:
+    x, target = translate_x(track), -index * box_width(viewport)
+    if abs(x - target) > 2:
+        raise StepError(f"{screen}: track at {x:.1f} px, expected {target:.1f} px")
+
+
+def content_at_rest(content: Locator, screen: str) -> None:
+    x = translate_x(content)
+    if abs(x) > 0.5:
+        raise StepError(f"{screen}: content still at {x:.1f} px")
+
+
+def content_moving(content: Locator, screen: str) -> None:
+    if abs(translate_x(content)) <= 0.5:
+        raise StepError(f"{screen}: content is not sliding")
+
+
+def within(page: Page, ms: int, check: Callable[[], bool], reason: str) -> None:
+    deadline = time.monotonic() + ms / 1000
+    while not check():
+        if time.monotonic() >= deadline:
+            raise StepError(reason)
+        page.wait_for_timeout(10)
+
+
+def verify_clip(card: Locator) -> None:
+    """During the in phase the incoming content sits to the right; ha-card must not overflow."""
+    card.page.wait_for_timeout(250)
+    deadline = time.monotonic() + 0.3
+    while True:
+        sample = card.evaluate(
+            """(card) => {
+                const haCard = card.shadowRoot.querySelector("ha-card");
+                const content = card.shadowRoot.querySelector(".slide-content");
+                const transform = content ? getComputedStyle(content).transform : "none";
+                return {
+                    offset: transform === "none" ? 0 : new DOMMatrixReadOnly(transform).m41,
+                    scroll: haCard.scrollWidth, client: haCard.clientWidth,
+                };
+            }"""
+        )
+        if sample["offset"] > 0:
+            break
+        if time.monotonic() >= deadline:
+            raise StepError("card A location slide: the in phase was never sampled")
+        card.page.wait_for_timeout(20)
+    if sample["scroll"] != sample["client"]:
+        raise StepError(
+            f"card A location slide: ha-card scrollWidth {sample['scroll']} != clientWidth {sample['client']}"
+        )
 
 
 def temperature(locator: Locator, text: str, screen: str) -> None:
@@ -361,10 +440,14 @@ def verify_switched(current: Locator, hourly: Locator, screen: str) -> None:
     absent_temperature(hourly, "21.0°")
 
 
-def verify_hourly_page(page: Page, current: Locator, hourly: Locator) -> None:
+def verify_hourly_page(page: Page, current: Locator, hourly: Locator,
+                       hold: Callable[[], None] | None) -> None:
     first_hour = hourly.locator(".hour-label").first.inner_text(timeout=WAIT_MS)
     next_hour = f"{(int(first_hour.removesuffix('시')) + 6) % 24:02d}시"
-    mouse_drag(page, hourly)
+    track = hourly.locator(".pages-track")
+    paused_drag(page, hourly, track, "hourly page drag", hold)
+    page.wait_for_timeout(SETTLE_MS)
+    track_on_page(track, hourly, 1, "hourly page 2")
     label = hourly.get_by_text(next_hour, exact=True)
     see(label, next_hour, "hourly page 2")
     box, grid = label.bounding_box(), hourly.bounding_box()
@@ -414,7 +497,12 @@ def verify_cards(page: Page, width: int, shots: Shots, start_date: date, second_
     shots.card(card_a, f"card-a-first-{width}")
 
     temperature(current, "21.5°", "card A before mouse swipe")
-    mouse_drag(page, current.locator(".current-temperature-value"))
+    phone = width == PHONE["width"]
+    content_a = card_a.locator(".slide-content")
+    paused_drag(page, current, content_a, "card A location drag",
+                (lambda: shots.card(card_a, "card-a-drag-location-390")) if phone else None)
+    if phone:
+        verify_clip(card_a)
     verify_switched(current, hourly, "card A after mouse swipe")
     see(current.get_by_text("검증2동 · 검증시 검증2동", exact=True), SECOND_AREA, "card A")
     # HA's more-info dialog heads every entity of the integration with its device name.
@@ -422,10 +510,28 @@ def verify_cards(page: Page, width: int, shots: Shots, start_date: date, second_
     dialog = more_info.get_by_text(re.compile("Naver Weather Custom"))
     unseen(dialog, "more-info dialog", "card A after mouse swipe")
     shots.card(card_a, f"card-a-second-{width}")
-    verify_hourly_page(page, current, hourly)
+    verify_hourly_page(page, current, hourly,
+                       (lambda: shots.card(card_a, "card-a-drag-hourly-390")) if phone else None)
     # A more-info dialog that renders late after the swipe would show up by now.
     unseen(dialog, "more-info dialog", "card A after hourly page drag")
     shots.card(card_a, f"card-a-hourly-page-2-{width}")
+
+    daily_a = card_a.locator(".daily-list")
+    daily_track = daily_a.locator(".pages-track")
+    card_a.get_by_role("button", name="일별 예보 2", exact=True).click()
+    page.wait_for_timeout(100)
+    x, end = translate_x(daily_track), -box_width(daily_a)
+    if not end < x < 0:
+        raise StepError(f"card A daily dot: track at {x:.1f} px, expected between 0 and {end:.1f} px")
+    page.wait_for_timeout(SETTLE_MS)
+    track_on_page(daily_track, daily_a, 1, "card A daily page 2")
+
+    current.get_by_role("button", name="지역 1", exact=True).click()
+    page.wait_for_timeout(100)
+    content_moving(content_a, "card A location dot")
+    page.wait_for_timeout(SETTLE_MS)
+    content_at_rest(content_a, "card A after location dot")
+    temperature(current, "21.5°", "card A after location dot")
 
     humidity.click()
     see(dialog, "Naver Weather Custom", "more-info dialog")
@@ -439,6 +545,11 @@ def verify_cards(page: Page, width: int, shots: Shots, start_date: date, second_
     shots.card(card_b, f"card-b-first-{width}")
     temperature(button_hourly, "21.0°", "card B before button switch")
     card_b.get_by_role("button", name=SECOND_AREA, exact=True).click()
+    content_b = card_b.locator(".slide-content")
+    page.wait_for_timeout(100)
+    content_moving(content_b, "card B button switch")
+    page.wait_for_timeout(SETTLE_MS)
+    content_at_rest(content_b, "card B after button switch")
     temperature(button_hourly, "71.0°", "card B after button switch")
     absent_temperature(button_hourly, "21.0°")
     shots.card(card_b, f"card-b-second-{width}")
@@ -447,6 +558,31 @@ def verify_cards(page: Page, width: int, shots: Shots, start_date: date, second_
     daily = card_c.locator(".daily-list")
     verify_daily(page, daily, start_date, second_entity)
     shots.card(card_c, f"card-c-{width}")
+    verify_reduced_motion(page, card_a, card_b)
+
+
+def verify_reduced_motion(page: Page, card_a: Locator, card_b: Locator) -> None:
+    """With the system's reduce-motion setting a page or location change lands at once."""
+    page.emulate_media(reduced_motion="reduce")
+    try:
+        hourly = card_a.locator(".hourly-grid")
+        track = hourly.locator(".pages-track")
+        dot = card_a.locator(".hourly-section .dot[aria-pressed='false']").first
+        index = int(str(dot.get_attribute("aria-label")).rsplit(" ", 1)[1]) - 1
+        target = -index * box_width(hourly)
+        dot.click()
+        within(page, 100, lambda: abs(translate_x(track) - target) <= 2,
+               "card A hourly dot with reduced motion: track not at its page within 100 ms")
+        name = card_b.locator(".location-button[aria-pressed='false']").first.inner_text()
+        button = card_b.get_by_role("button", name=name, exact=True)
+        content = card_b.locator(".slide-content")
+        button.click()
+        within(page, 100, lambda: abs(translate_x(content)) <= 0.5 and button.get_attribute("aria-pressed") == "true",
+               "card B button with reduced motion: location not switched within 100 ms")
+        temperature(card_b.locator(".hourly-grid"), "21.0°" if name == AREA else "71.0°",
+                    "card B after reduced-motion button switch")
+    finally:
+        page.emulate_media(reduced_motion="no-preference")
 
 
 def watch_card_errors(page: Page, errors: list[str]) -> None:

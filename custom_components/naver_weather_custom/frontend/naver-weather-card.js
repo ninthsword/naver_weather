@@ -13,6 +13,10 @@ const STATE_TEXT = {
   empty: "예보 없음",
   error: "예보를 불러오지 못했습니다",
 };
+const REDUCED_MOTION = "(prefers-reduced-motion: reduce)";
+const ONSET_PX = 8;
+const SUPPRESS_CLICK_PX = 40;
+const FALLBACK_MS = 400;
 
 const STYLE = `
   :host { display: block; }
@@ -23,6 +27,7 @@ const STYLE = `
     container-type: inline-size;
     color: var(--primary-text-color);
     font: inherit;
+    overflow: hidden;
   }
   .section { padding: 6px 0; min-width: 0; }
   .forecast-section { border-top: 1px solid var(--divider-color); }
@@ -95,7 +100,14 @@ const STYLE = `
   .chip-icon { --mdc-icon-size: 17px; }
   .chip-row { column-gap: clamp(4px, 2cqw, 12px); }
   .rainfall { text-align: start; color: var(--secondary-text-color); }
-  .hourly-grid { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); }
+  .hourly-grid, .daily-list { display: block; overflow: hidden; }
+  .pages-track { display: flex; align-items: flex-start; transition: transform 300ms ease-out; }
+  .hourly-page { flex: 0 0 100%; display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); }
+  .daily-page { flex: 0 0 100%; display: block; }
+  .slide-content { transition: transform var(--slide-ms, 200ms) ease-out; }
+  @media (prefers-reduced-motion: reduce) {
+    .pages-track, .slide-content { transition-duration: 0s; }
+  }
   .hour, .day-cell { display: grid; justify-items: center; align-items: center; text-align: center; }
   .hour { gap: 2px; font-size: 12px; line-height: 1.2; }
   .unit { font-size: 9px; color: var(--secondary-text-color); }
@@ -141,6 +153,14 @@ function pictureNode(picture, className) {
   return picture.icon ? icon(picture.icon, className) : element("span", "", picture.text);
 }
 
+function pageTransform(page, offset) {
+  return `translateX(calc(${-page * 100}% + ${offset}px))`;
+}
+
+function reducedMotion() {
+  return Boolean(window.matchMedia?.(REDUCED_MOTION).matches);
+}
+
 function dots(count, active, label, choose) {
   const row = element("div", "dots");
   for (let index = 0; index < count; index++) {
@@ -169,6 +189,7 @@ class NaverWeatherCard extends HTMLElement {
   #renderFrame = 0;
   #renderInputs = [];
   #drag;
+  #slides = {};
   #suppressClick = false;
 
   constructor() {
@@ -223,6 +244,7 @@ class NaverWeatherCard extends HTMLElement {
     this.#listenToConnection(undefined);
     this.#applyGeneration(model.nextGeneration(this.#generation));
     this.#cancelDrag();
+    for (const slide of Object.values(this.#slides)) slide.drop();
     cancelAnimationFrame(this.#renderFrame);
     this.#renderFrame = 0;
     this.#renderInputs = [];
@@ -392,19 +414,43 @@ class NaverWeatherCard extends HTMLElement {
     if (!event.isPrimary || event.button !== 0 || this.#drag) return;
     const surface = event.target.closest("[data-swipe]")?.dataset.swipe;
     if (!surface) return;
-    this.#drag = { id: event.pointerId, x: event.clientX, y: event.clientY, surface, step: 0 };
+    this.#finishSlides();
+    this.#drag = { id: event.pointerId, x: event.clientX, y: event.clientY, surface, onset: false, dx: 0 };
     window.addEventListener("pointermove", this.#moveDrag);
     window.addEventListener("pointerup", this.#finishDrag);
-    window.addEventListener("pointercancel", this.#cancelDrag);
+    window.addEventListener("pointercancel", this.#abortDrag);
   };
+
+  #dragFrame(surface) {
+    if (surface === "location") {
+      const node = this.#body.querySelector(".slide-content");
+      const { entities } = this.#config;
+      return node && { node, index: entities.indexOf(this.#entityId), count: entities.length };
+    }
+    const forecast = this.#forecasts[surface];
+    const node = this.#body.querySelector(`.${surface}-section .pages-track`);
+    return forecast && node
+      && { node, index: forecast.page, count: Math.ceil(forecast.rows.length / PAGE_SIZE[surface]) };
+  }
+
+  #dragTransform(surface, index, offset) {
+    return surface === "location" ? `translateX(${offset}px)` : pageTransform(index, offset);
+  }
 
   #moveDrag = (event) => {
     const drag = this.#drag;
-    if (!drag || drag.id !== event.pointerId || drag.step) return;
+    if (!drag || drag.id !== event.pointerId) return;
     const dx = event.clientX - drag.x;
-    if (Math.abs(dx) > 40 && Math.abs(dx) > Math.abs(event.clientY - drag.y)) {
-      drag.step = dx < 0 ? 1 : -1;
+    if (!drag.onset) {
+      if (Math.abs(dx) <= ONSET_PX || Math.abs(dx) <= Math.abs(event.clientY - drag.y)) return;
+      drag.onset = true;
+      drag.frame = this.#dragFrame(drag.surface);
     }
+    drag.dx = dx;
+    if (!drag.frame) return;
+    const { node, index, count } = drag.frame;
+    node.style.transition = "none";
+    node.style.transform = this.#dragTransform(drag.surface, index, model.dragOffset(dx, index, count));
   };
 
   #finishDrag = (event) => {
@@ -412,29 +458,121 @@ class NaverWeatherCard extends HTMLElement {
     if (!drag || drag.id !== event.pointerId) return;
     this.#moveDrag(event);
     this.#cancelDrag();
-    if (!drag.step) return;
-    if (drag.surface === "location") {
-      this.#chooseLocation(this.#config.entities.indexOf(this.#entityId) + drag.step);
-    } else if (this.#forecasts[drag.surface]) {
-      this.#choosePage(drag.surface, this.#forecasts[drag.surface].page + drag.step);
+    if (!drag.onset) return;
+    this.#suppressClick = Math.abs(drag.dx) > SUPPRESS_CLICK_PX;
+    if (!drag.frame) return;
+    const { node, index, count } = drag.frame;
+    const target = model.settleTarget(drag.dx, index, count);
+    if (drag.surface !== "location") {
+      this.#slidePage(drag.surface, target);
+    } else if (target !== index) {
+      this.#slideLocation(target);
+    } else {
+      this.#slide("location", node, "translateX(0px)", 300);
     }
   };
 
-  #cancelDrag = (event) => {
-    if (!this.#drag || (event && this.#drag.id !== event.pointerId)) return;
-    this.#suppressClick ||= Boolean(this.#drag.step);
+  #abortDrag = (event) => {
+    const drag = this.#drag;
+    if (!drag || drag.id !== event.pointerId) return;
+    this.#cancelDrag();
+    if (!drag.frame) return;
+    const { node, index } = drag.frame;
+    this.#slide(drag.surface, node, this.#dragTransform(drag.surface, index, 0), 300);
+  };
+
+  #cancelDrag = () => {
+    if (!this.#drag) return;
     this.#drag = undefined;
     window.removeEventListener("pointermove", this.#moveDrag);
     window.removeEventListener("pointerup", this.#finishDrag);
-    window.removeEventListener("pointercancel", this.#cancelDrag);
+    window.removeEventListener("pointercancel", this.#abortDrag);
     this.#scheduleRender();
   };
+
+  // One running slide per key ("location", "hourly", "daily"); it ends on its own transform's
+  // transitionend or after FALLBACK_MS, and finish(true) jumps it to its target at once.
+  #slide(key, node, transform, ms, done = () => this.#scheduleRender()) {
+    this.#slides[key]?.finish(true);
+    const reduced = reducedMotion();
+    void getComputedStyle(node).transform;
+    node.style.transition = reduced ? "none" : "";
+    node.style.setProperty("--slide-ms", `${ms}ms`);
+    node.style.transform = transform;
+    const onEnd = (event) => {
+      if (event.target === node && event.propertyName === "transform") slide.finish(false);
+    };
+    const slide = {
+      drop: () => {
+        if (this.#slides[key] !== slide) return false;
+        delete this.#slides[key];
+        clearTimeout(slide.timer);
+        node.removeEventListener("transitionend", onEnd);
+        return true;
+      },
+      finish: (jump) => {
+        if (!slide.drop()) return;
+        if (jump) node.style.transition = "none";
+        done(jump);
+      },
+    };
+    this.#slides[key] = slide;
+    if (reduced || !parseFloat(getComputedStyle(node).transitionDuration)) {
+      slide.finish(false);
+      return;
+    }
+    node.addEventListener("transitionend", onEnd);
+    slide.timer = setTimeout(() => slide.finish(false), FALLBACK_MS);
+  }
+
+  #finishSlides() {
+    for (const slide of Object.values(this.#slides)) slide.finish(true);
+  }
+
+  #slidePage(type, page) {
+    this.#choosePage(type, page);
+    const track = this.#body.querySelector(`.${type}-section .pages-track`);
+    if (track) this.#slide(type, track, pageTransform(this.#forecasts[type].page, 0), 300);
+  }
+
+  #pickPage(type, page) {
+    this.#finishSlides();
+    this.#render();
+    this.#slidePage(type, page);
+  }
+
+  // Out phase, then the switch and one immediate render at the midpoint, then the in phase.
+  #slideLocation(index) {
+    this.#finishSlides();
+    const { entities } = this.#config;
+    const from = entities.indexOf(this.#entityId);
+    if (!entities[index] || index === from) return;
+    const content = this.#body.querySelector(".slide-content");
+    if (!content || reducedMotion()) {
+      this.#chooseLocation(index);
+      this.#render();
+      return;
+    }
+    const side = index > from ? 100 : -100;
+    this.#slide("location", content, `translateX(${-side}%)`, 200, (jump) => {
+      this.#chooseLocation(index);
+      this.#render();
+      const incoming = this.#body.querySelector(".slide-content");
+      if (jump || !incoming) {
+        this.#scheduleRender();
+        return;
+      }
+      incoming.style.transition = "none";
+      incoming.style.transform = `translateX(${side}%)`;
+      this.#slide("location", incoming, "translateX(0px)", 200);
+    });
+  }
 
   #scheduleRender() {
     if (this.#renderFrame || !this.isConnected) return;
     this.#renderFrame = requestAnimationFrame(() => {
       this.#renderFrame = 0;
-      if (!this.#drag) this.#render();
+      if (!this.#drag && !Object.keys(this.#slides).length) this.#render();
     });
   }
 
@@ -556,10 +694,17 @@ class NaverWeatherCard extends HTMLElement {
     }
     const pages = model.pages(forecast.rows, PAGE_SIZE[type]);
     const grid = element("div", type === "hourly" ? "hourly-grid" : "daily-list");
-    for (const row of pages[forecast.page]) {
-      grid.append(type === "hourly" ? this.#hour(row ?? {}, zone) : this.#day(row ?? {}, now, zone, workdays));
+    const track = element("div", "pages-track");
+    track.style.transform = pageTransform(forecast.page, 0);
+    for (const rows of pages) {
+      const page = element("div", `${type}-page`);
+      for (const row of rows) {
+        page.append(type === "hourly" ? this.#hour(row ?? {}, zone) : this.#day(row ?? {}, now, zone, workdays));
+      }
+      track.append(page);
     }
-    section.append(grid, dots(pages.length, forecast.page, SECTION_NAMES[type], (page) => this.#choosePage(type, page)));
+    grid.append(track);
+    section.append(grid, dots(pages.length, forecast.page, SECTION_NAMES[type], (page) => this.#pickPage(type, page)));
     return section;
   }
 
@@ -589,14 +734,14 @@ class NaverWeatherCard extends HTMLElement {
       for (const [index, name] of names.entries()) {
         const button = element("button", index === selected ? "button location-button active-location" : "button location-button", name);
         button.setAttribute("aria-pressed", String(index === selected));
-        button.addEventListener("click", () => this.#chooseLocation(index));
+        button.addEventListener("click", () => this.#slideLocation(index));
         locations.append(button);
       }
       content.append(locations);
     }
     const location = element("div", "location-row");
     location.append(element("div", "location-label", label));
-    if (swipe) location.append(dots(entities.length, selected, "지역", (index) => this.#chooseLocation(index)));
+    if (swipe) location.append(dots(entities.length, selected, "지역", (index) => this.#slideLocation(index)));
     const section = showCurrent ? element("section", "section current-section") : location;
     if (swipe) {
       section.classList.add("swipe");
@@ -608,10 +753,12 @@ class NaverWeatherCard extends HTMLElement {
       if (current !== "ready") section.append(element("div", "status", STATE_TEXT[current]));
       if (current === "ready" || this.#availability === "unavailable") this.#currentWeather(section, current, now, zone);
     }
-    content.append(section);
+    const slide = element("div", "slide-content");
+    slide.append(section);
     for (const [type, forecast] of Object.entries(this.#forecasts)) {
-      content.append(this.#forecastSection(type, forecast, current, now, zone, workdays));
+      slide.append(this.#forecastSection(type, forecast, current, now, zone, workdays));
     }
+    content.append(slide);
     this.#body.replaceChildren(content);
   }
 }
