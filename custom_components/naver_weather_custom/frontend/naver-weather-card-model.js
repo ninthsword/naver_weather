@@ -301,3 +301,8 @@ export function reconnectForecasts(forecasts) {
     type, { ...section, messageReceived: false, rows: [], reconnecting: true },
   ]));
 }
+
+export function holdHeight(states, record, width) {
+  const loading = states.some((state) => state === "loading" || state === "waiting");
+  return loading && record && record.width === width ? record.height : null;
+}

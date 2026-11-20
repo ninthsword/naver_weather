@@ -24,6 +24,7 @@ const STYLE = `
     --naver-warm: rgba(255, 87, 34, 1);
     --naver-cool: rgba(33, 150, 243, 1);
     padding: 10px;
+    box-sizing: border-box;
     container-type: inline-size;
     color: var(--primary-text-color);
     font: inherit;
@@ -181,12 +182,10 @@ class NaverWeatherCard extends HTMLElement {
   #body;
   #connection;
   #entityId;
-  #availability;
-  #generation = { number: 0, subscriptions: [] };
-  #entities = {};
-  #entitiesReply = "pending";
-  #lookupAttempt;
-  #forecasts = {};
+  // One entry per configured location, filled in the background, so a switch renders at once.
+  #entries = new Map();
+  #nextToken = 0;
+  #heightRecord = null;
   #renderFrame = 0;
   #renderInputs = [];
   #drag;
@@ -223,6 +222,7 @@ class NaverWeatherCard extends HTMLElement {
   setConfig(config) {
     this.#config = model.validateConfig(config);
     for (const slide of Object.values(this.#slides)) slide.drop();
+    this.#disposeEntries();
     this.#entityId = undefined;
     this.#sync();
   }
@@ -235,16 +235,12 @@ class NaverWeatherCard extends HTMLElement {
 
   connectedCallback() {
     this.#listenToConnection(this.#hass?.connection);
-    if (this.#hass && this.#config && this.#entityId) {
-      this.#beginGeneration();
-    } else {
-      this.#sync();
-    }
+    this.#sync();
   }
 
   disconnectedCallback() {
     this.#listenToConnection(undefined);
-    this.#applyGeneration(model.nextGeneration(this.#generation));
+    this.#disposeEntries();
     this.#cancelDrag();
     for (const slide of Object.values(this.#slides)) slide.drop();
     cancelAnimationFrame(this.#renderFrame);
@@ -262,19 +258,38 @@ class NaverWeatherCard extends HTMLElement {
 
   #onReconnect = () => {
     this.#cancelDrag();
-    this.#forecasts = model.reconnectForecasts(this.#forecasts);
+    for (const entry of this.#entries.values()) entry.forecasts = model.reconnectForecasts(entry.forecasts);
     this.#scheduleRender();
   };
 
-  #applyGeneration({ state, dispose }) {
-    this.#generation = state;
-    for (const unsubscribe of dispose) {
+  #unsubscribe(unsubscribes) {
+    for (const unsubscribe of unsubscribes) {
       try {
         Promise.resolve(unsubscribe()).catch(() => {});
       } catch {
         // HA can already have dropped the connection during removal.
       }
     }
+  }
+
+  #disposeEntry(entry) {
+    this.#entries.delete(entry.id);
+    this.#unsubscribe(entry.subscriptions);
+    entry.subscriptions = [];
+  }
+
+  #disposeEntries() {
+    for (const entry of [...this.#entries.values()]) this.#disposeEntry(entry);
+    this.#heightRecord = null;
+    this.#body.style.removeProperty("min-height");
+  }
+
+  #isCurrent(entry, token) {
+    return this.#entries.get(entry.id)?.token === token;
+  }
+
+  get #entry() {
+    return this.#entries.get(this.#entityId);
   }
 
   get #storageKey() {
@@ -304,111 +319,135 @@ class NaverWeatherCard extends HTMLElement {
         // The selection still works for this visit.
       }
     }
-    this.#beginGeneration();
+    const entry = this.#entry;
+    if (entry) {
+      entry.forecasts = Object.fromEntries(Object.entries(entry.forecasts).map(([type, forecast]) => [
+        type, { ...forecast, page: 0 },
+      ]));
+    }
+    this.#scheduleRender();
   }
 
   get #weather() {
     return this.#hass.states[this.#entityId];
   }
 
-  get #entityAvailability() {
-    return !this.#weather ? "missing" : this.#weather.state === "unavailable" ? "unavailable" : "available";
+  #availabilityOf(id) {
+    const weather = this.#hass.states[id];
+    return !weather ? "missing" : weather.state === "unavailable" ? "unavailable" : "available";
   }
 
-  get #currentState() {
+  #currentStateOf(entry) {
+    const weather = this.#hass.states[entry.id];
     return model.currentState({
-      entityPresent: Boolean(this.#weather),
-      entityState: this.#weather?.state,
-      entitiesReply: this.#entitiesReply,
+      entityPresent: Boolean(weather),
+      entityState: weather?.state,
+      entitiesReply: entry.entitiesReply,
     });
   }
 
   #sync() {
     if (!this.isConnected || !this.#hass || !this.#config) return;
-    if (!this.#entityId || this.#entityAvailability !== this.#availability) {
-      this.#entityId ??= this.#initialEntity();
-      this.#beginGeneration();
-      return;
+    this.#entityId ??= this.#initialEntity();
+    for (const id of this.#config.entities) {
+      const entry = this.#entries.get(id);
+      const availability = this.#availabilityOf(id);
+      if (!entry || entry.availability !== availability) {
+        if (entry) this.#disposeEntry(entry);
+        if (id === this.#entityId) this.#cancelDrag();
+        void this.#lookupEntities(this.#createEntry(id, availability));
+        continue;
+      }
+      if (model.lookupRetryDue(entry.entitiesReply, entry.lookupAttempt, Date.now())) {
+        void this.#lookupEntities(entry);
+      }
+      this.#subscribeForecasts(entry);
     }
-    if (model.lookupRetryDue(this.#entitiesReply, this.#lookupAttempt, Date.now())) {
-      void this.#lookupEntities();
-    }
-    this.#subscribeForecasts();
     this.#scheduleRender();
   }
 
-  #beginGeneration() {
-    this.#cancelDrag();
-    this.#applyGeneration(model.nextGeneration(this.#generation));
-    this.#availability = this.#entityAvailability;
-    this.#entities = {};
-    this.#entitiesReply = "pending";
+  #createEntry(id, availability) {
     const types = this.#config.mode === "both" ? ["hourly", "daily"] : [this.#config.mode];
-    this.#forecasts = Object.fromEntries(types.map((type) => [
-      type, { subscription: "pending", messageReceived: false, rows: [], page: 0 },
-    ]));
-    void this.#lookupEntities();
-    this.#scheduleRender();
+    const entry = {
+      id,
+      token: ++this.#nextToken,
+      availability,
+      entities: {},
+      entitiesReply: "pending",
+      lookupAttempt: undefined,
+      forecasts: Object.fromEntries(types.map((type) => [
+        type, { subscription: "pending", messageReceived: false, rows: [], page: 0 },
+      ])),
+      subscriptions: [],
+    };
+    this.#entries.set(id, entry);
+    return entry;
   }
 
-  async #lookupEntities() {
-    const generation = this.#generation.number;
-    this.#lookupAttempt = Date.now();
-    this.#entitiesReply = "pending";
+  async #lookupEntities(entry) {
+    const { token } = entry;
+    entry.lookupAttempt = Date.now();
+    entry.entitiesReply = "pending";
     try {
       const reply = await this.#hass.callWS({
-        type: "naver_weather_custom/card_entities", entity_id: this.#entityId,
+        type: "naver_weather_custom/card_entities", entity_id: entry.id,
       });
-      if (!model.isCurrent(this.#generation, generation)) return;
-      this.#entities = reply.entities;
-      this.#entitiesReply = "ok";
+      if (!this.#isCurrent(entry, token)) return;
+      entry.entities = reply.entities;
+      entry.entitiesReply = "ok";
     } catch (error) {
-      if (!model.isCurrent(this.#generation, generation)) return;
-      this.#entitiesReply = error?.code === "not_found" ? "not_found" : "error";
+      if (!this.#isCurrent(entry, token)) return;
+      entry.entitiesReply = error?.code === "not_found" ? "not_found" : "error";
     }
-    this.#subscribeForecasts();
+    this.#subscribeForecasts(entry);
     this.#scheduleRender();
   }
 
-  #subscribeForecasts() {
-    if (this.#currentState !== "ready") return;
-    for (const [type, forecast] of Object.entries(this.#forecasts)) {
+  // Only an entry whose weather entity is present, available and recognised subscribes.
+  #subscribeForecasts(entry) {
+    if (this.#currentStateOf(entry) !== "ready") return;
+    for (const [type, forecast] of Object.entries(entry.forecasts)) {
       if (forecast.lastAttempt == null
           || (forecast.subscription === "error" && model.retryDue(forecast.lastAttempt, Date.now()))) {
-        void this.#subscribe(type);
+        void this.#subscribe(entry, type);
       }
     }
   }
 
-  #updateForecast(type, changes) {
-    this.#forecasts = { ...this.#forecasts, [type]: { ...this.#forecasts[type], ...changes } };
+  #updateForecast(entry, type, changes) {
+    entry.forecasts = { ...entry.forecasts, [type]: { ...entry.forecasts[type], ...changes } };
     this.#scheduleRender();
   }
 
-  async #subscribe(type) {
-    const generation = this.#generation.number;
-    this.#updateForecast(type, { subscription: "pending", lastAttempt: Date.now() });
+  async #subscribe(entry, type) {
+    const { token } = entry;
+    this.#updateForecast(entry, type, { subscription: "pending", lastAttempt: Date.now() });
     try {
       const unsubscribe = await this.#connection.subscribeMessage((message) => {
-        if (!model.isCurrent(this.#generation, generation)) return;
+        if (!this.#isCurrent(entry, token)) return;
         const limit = type === "hourly" ? this.#config.hours : this.#config.days;
         const rows = Array.isArray(message?.forecast) ? message.forecast.slice(0, limit) : [];
-        const page = model.pageAfterRows(this.#forecasts[type].page, rows.length, PAGE_SIZE[type]);
-        this.#updateForecast(type, { messageReceived: true, reconnecting: false, rows, page });
-      }, { type: "weather/subscribe_forecast", entity_id: this.#entityId, forecast_type: type });
-      this.#applyGeneration(model.subscriptionResolved(this.#generation, generation, unsubscribe));
-      if (model.isCurrent(this.#generation, generation)) this.#updateForecast(type, { subscription: "ok" });
+        const page = model.pageAfterRows(entry.forecasts[type].page, rows.length, PAGE_SIZE[type]);
+        this.#updateForecast(entry, type, { messageReceived: true, reconnecting: false, rows, page });
+      }, { type: "weather/subscribe_forecast", entity_id: entry.id, forecast_type: type });
+      if (!this.#isCurrent(entry, token)) {
+        this.#unsubscribe([unsubscribe]);
+        return;
+      }
+      entry.subscriptions.push(unsubscribe);
+      this.#updateForecast(entry, type, { subscription: "ok" });
     } catch {
-      if (model.isCurrent(this.#generation, generation)) {
-        this.#updateForecast(type, { subscription: "error", reconnecting: false });
+      if (this.#isCurrent(entry, token)) {
+        this.#updateForecast(entry, type, { subscription: "error", reconnecting: false });
       }
     }
   }
 
   #choosePage(type, page) {
-    const forecast = this.#forecasts[type];
+    const entry = this.#entry;
+    const forecast = entry.forecasts[type];
     const next = model.pageAfterRows(Math.max(0, page), forecast.rows.length, PAGE_SIZE[type]);
-    if (next !== forecast.page) this.#updateForecast(type, { page: next });
+    if (next !== forecast.page) this.#updateForecast(entry, type, { page: next });
   }
 
   #startDrag = (event) => {
@@ -533,7 +572,7 @@ class NaverWeatherCard extends HTMLElement {
   #slidePage(type, page) {
     this.#choosePage(type, page);
     const track = this.#body.querySelector(`.${type}-section .pages-track`);
-    if (track) this.#slide(type, track, pageTransform(this.#forecasts[type].page, 0), 300);
+    if (track) this.#slide(type, track, pageTransform(this.#entry.forecasts[type].page, 0), 300);
   }
 
   #pickPage(type, page) {
@@ -584,7 +623,7 @@ class NaverWeatherCard extends HTMLElement {
   }
 
   #tap(target, className, text) {
-    const id = model.tapTarget(target, this.#entityId, this.#entities);
+    const id = model.tapTarget(target, this.#entityId, this.#entry.entities);
     const node = element(id ? "button" : "div", id ? `button ${className}` : className, text);
     if (id) {
       node.addEventListener("click", () => this.dispatchEvent(new CustomEvent("hass-more-info", {
@@ -595,7 +634,7 @@ class NaverWeatherCard extends HTMLElement {
   }
 
   #chip(parent, target, text, name, color) {
-    if (!model.tapTarget(target, this.#entityId, this.#entities)) return;
+    if (!model.tapTarget(target, this.#entityId, this.#entry.entities)) return;
     const chip = this.#tap(target, target === "rainfall" ? "chip rainfall" : "chip");
     chip.append(icon(name, color ? `chip-icon ${color}` : "chip-icon"), element("span", "", text));
     parent.append(chip);
@@ -603,7 +642,8 @@ class NaverWeatherCard extends HTMLElement {
 
   #currentWeather(section, state, now, zone) {
     const weather = this.#weather;
-    const sensor = (key) => state === "ready" ? this.#hass.states[this.#entities[key]]?.state : undefined;
+    const { entities } = this.#entry;
+    const sensor = (key) => state === "ready" ? this.#hass.states[entities[key]]?.state : undefined;
     const raw = model.stateWithUnit;
     const code = state === "ready" ? model.stateText(weather.attributes.attribution).split(",")[0] : null;
     const picture = model.picture(this.#config.icon_path, code, weather.state);
@@ -713,18 +753,19 @@ class NaverWeatherCard extends HTMLElement {
   }
 
   #render() {
-    if (!this.#hass || !this.#config || !this.#entityId) return;
+    const entry = this.#entry;
+    if (!this.#hass || !this.#config || !entry) return;
     const { entities, switcher, show_current: showCurrent, workday_entities: workdayEntities } = this.#config;
     const { states } = this.#hass;
     const workdays = Array.isArray(workdayEntities) ? workdayEntities.map((id) => states[id]?.state) : undefined;
     const zone = this.#hass.config.time_zone;
     const now = new Date();
     const names = entities.map((id) => this.#locationName(id));
-    const current = this.#currentState;
+    const current = this.#currentStateOf(entry);
     const inputs = [
-      this.#config, this.#entityId, current, this.#weather, this.#forecasts, this.#entities,
+      this.#config, this.#entityId, current, this.#weather, entry.forecasts, entry.entities,
       states["sun.sun"], zone, Math.floor(now.getTime() / 60_000), ...names, ...(workdays ?? []),
-      ...Object.values(this.#entities).map((id) => states[id]),
+      ...Object.values(entry.entities).map((id) => states[id]),
     ];
     if (inputs.length === this.#renderInputs.length && inputs.every((input, index) => input === this.#renderInputs[index])) return;
     this.#renderInputs = inputs;
@@ -732,7 +773,7 @@ class NaverWeatherCard extends HTMLElement {
     const content = document.createDocumentFragment();
     const selected = entities.indexOf(this.#entityId);
     const swipe = entities.length > 1 && switcher === "swipe";
-    const label = this.#locationName(this.#entityId, current === "ready" ? states[this.#entities.LocationInfo]?.state : null);
+    const label = this.#locationName(this.#entityId, current === "ready" ? states[entry.entities.LocationInfo]?.state : null);
     if (entities.length > 1 && switcher === "buttons") {
       const locations = element("div", "location-buttons");
       for (const [index, name] of names.entries()) {
@@ -755,15 +796,33 @@ class NaverWeatherCard extends HTMLElement {
       section.setAttribute("aria-label", "현재 날씨");
       section.append(location);
       if (current !== "ready") section.append(element("div", "status", STATE_TEXT[current]));
-      if (current === "ready" || this.#availability === "unavailable") this.#currentWeather(section, current, now, zone);
+      if (current === "ready" || entry.availability === "unavailable") this.#currentWeather(section, current, now, zone);
     }
     const slide = element("div", "slide-content");
     slide.append(section);
-    for (const [type, forecast] of Object.entries(this.#forecasts)) {
+    const forecastStates = [];
+    for (const [type, forecast] of Object.entries(entry.forecasts)) {
+      forecastStates.push(model.forecastState({ ...forecast, current }));
       slide.append(this.#forecastSection(type, forecast, current, now, zone, workdays));
     }
     content.append(slide);
     this.#body.replaceChildren(content);
+    this.#holdHeight(showCurrent ? [current, ...forecastStates] : forecastStates);
+  }
+
+  // While a section is loading or waiting, keep the height of the last fully drawn render at the
+  // same width; a fully drawn render records its natural height.
+  #holdHeight(states) {
+    const width = this.#body.offsetWidth;
+    const height = model.holdHeight(states, this.#heightRecord, width);
+    if (height == null) {
+      this.#body.style.removeProperty("min-height");
+    } else {
+      this.#body.style.minHeight = `${height}px`;
+    }
+    if (states.every((state) => state === "ready" || state === "rows")) {
+      this.#heightRecord = { height: this.#body.offsetHeight, width: this.#body.offsetWidth };
+    }
   }
 }
 

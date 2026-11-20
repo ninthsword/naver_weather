@@ -39,6 +39,32 @@ DASHBOARD = "naver-weather-check"
 WEATHER_VIEW = f"/{DASHBOARD}/weather-check"
 DRAG_PX = 100
 SETTLE_MS = 600
+SAMPLE_MS = 600
+SHOWN_MS = 300
+LOADING_TEXTS = ("불러오는 중", "예보 대기")
+# Installed on a location button just before it is clicked: from the click on, every 20 ms for
+# SAMPLE_MS, record the card's height, its text and whether its hourly grid shows `expected`.
+SAMPLE_SWITCH = """(button, [expected, ms]) => {
+    const root = button.getRootNode();
+    const host = root.host;
+    const samples = [];
+    window.__naverSwitch = { before: host.getBoundingClientRect().height, samples: null };
+    button.addEventListener("click", () => {
+        const start = performance.now();
+        const take = () => {
+            const grid = root.querySelector(".hourly-grid");
+            samples.push({
+                t: performance.now() - start,
+                height: host.getBoundingClientRect().height,
+                text: root.querySelector(".body")?.textContent ?? "",
+                shown: Boolean(grid) && [...grid.querySelectorAll("span")].some((s) => s.textContent === expected),
+            });
+            if (performance.now() - start < ms) setTimeout(take, 20);
+            else window.__naverSwitch.samples = samples;
+        };
+        take();
+    }, { capture: true, once: true });
+}"""
 TRANSLATE_X = """(node) => {
     const transform = getComputedStyle(node).transform;
     return transform === "none" ? 0 : new DOMMatrixReadOnly(transform).m41;
@@ -430,6 +456,32 @@ def verify_clip(card: Locator) -> None:
         )
 
 
+def sampled_switch(page: Page, card: Locator, name: str, expected: str, screen: str) -> None:
+    """Click a location button and prove the switched-to location shows at once without shrinking."""
+    button = card.get_by_role("button", name=name, exact=True)
+    button.evaluate(SAMPLE_SWITCH, [expected, SAMPLE_MS])
+    button.click()
+    page.wait_for_timeout(100)
+    content_moving(card.locator(".slide-content"), screen)
+    page.wait_for_function("() => window.__naverSwitch?.samples", timeout=WAIT_MS)
+    result = page.evaluate("() => window.__naverSwitch")
+    before, samples = float(result["before"]), result["samples"]
+    if not samples:
+        raise StepError(f"{screen}: no samples were taken after the click")
+    for sample in samples:
+        t = float(sample["t"])
+        for text in LOADING_TEXTS:
+            if text in sample["text"]:
+                raise StepError(f"{screen}: '{text}' shown {t:.0f} ms after the click")
+        if abs(float(sample["height"]) - before) > 2:
+            raise StepError(
+                f"{screen}: card height {sample['height']:.1f} px at {t:.0f} ms, {before:.1f} px before the click"
+            )
+    shown = [float(sample["t"]) for sample in samples if sample["shown"]]
+    if not shown or shown[0] > SHOWN_MS:
+        raise StepError(f"{screen}: '{expected}' not shown within {SHOWN_MS} ms of the click")
+
+
 def temperature(locator: Locator, text: str, screen: str) -> None:
     see(locator.get_by_text(text, exact=True), text, screen)
 
@@ -549,15 +601,23 @@ def verify_cards(page: Page, width: int, shots: Shots, start_date: date, second_
     expect(card_b.locator(".daily-section")).to_have_count(0)
     shots.card(card_b, f"card-b-first-{width}")
     temperature(button_hourly, "21.0°", "card B before button switch")
-    card_b.get_by_role("button", name=SECOND_AREA, exact=True).click()
+    # Card B has been on the page through card A's steps; its second location was never shown.
+    page.wait_for_timeout(2000)
+    sampled_switch(page, card_b, SECOND_AREA, "71.0°", "card B button switch")
     content_b = card_b.locator(".slide-content")
-    page.wait_for_timeout(100)
-    content_moving(content_b, "card B button switch")
     page.wait_for_timeout(SETTLE_MS)
     content_at_rest(content_b, "card B after button switch")
     temperature(button_hourly, "71.0°", "card B after button switch")
     absent_temperature(button_hourly, "21.0°")
     shots.card(card_b, f"card-b-second-{width}")
+    sampled_switch(page, card_b, AREA, "21.0°", "card B button switch back")
+    page.wait_for_timeout(SETTLE_MS)
+    content_at_rest(content_b, "card B after switching back")
+    temperature(button_hourly, "21.0°", "card B after switching back")
+    card_b.get_by_role("button", name=SECOND_AREA, exact=True).click()
+    page.wait_for_timeout(SETTLE_MS)
+    content_at_rest(content_b, "card B after switching again")
+    temperature(button_hourly, "71.0°", "card B after switching again")
 
     expect(card_c.locator(".hourly-section")).to_have_count(0)
     daily = card_c.locator(".daily-list")

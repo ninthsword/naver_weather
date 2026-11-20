@@ -289,3 +289,17 @@ test("reconnect clears visible forecasts while keeping their page and active sub
   assert.equal(model.isCurrent(state, 3), true);
   assert.equal(state.subscriptions.length, 1);
 });
+
+test("the card height is held only while a section loads at the recorded width", () => {
+  const record = { height: 412, width: 390 };
+  assert.equal(model.holdHeight(["loading"], record, 390), 412);
+  assert.equal(model.holdHeight(["ready", "waiting"], record, 390), 412);
+  assert.equal(model.holdHeight(["ready", "rows", "waiting"], record, 390), 412);
+  for (const state of ["nodata", "foreign", "empty", "error", "rows", "ready"]) {
+    assert.equal(model.holdHeight(["ready", state], record, 390), null);
+  }
+  assert.equal(model.holdHeight([], record, 390), null);
+  assert.equal(model.holdHeight(["loading"], null, 390), null);
+  assert.equal(model.holdHeight(["waiting"], record, 1440), null);
+  assert.equal(model.holdHeight(["loading", "waiting"], record, 389.5), null);
+});
