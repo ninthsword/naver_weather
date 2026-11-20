@@ -262,7 +262,7 @@ class SyntheticUpdateTest(unittest.TestCase):
     def test_result_readings_are_text_as_the_parser_stores_them(self) -> None:
         import run_hass
 
-        api = types.SimpleNamespace()
+        api = types.SimpleNamespace(area="검증동 날씨")
         asyncio.run(run_hass._synthetic_update(cast("run_hass.NWeatherAPI", api)))
         for key in (
             run_hass.NOW_TEMP[0],

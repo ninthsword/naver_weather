@@ -20,6 +20,7 @@ from homeassistant.const import (
     UnitOfSpeed,
     UnitOfTemperature,
 )
+from homeassistant.core import callback
 
 from .api_nweather import KST, filter_daily_forecast_rows
 from .const import (
@@ -195,6 +196,12 @@ class NWeatherMain(NWeatherDevice, WeatherEntity):  # pyright: ignore[reportInco
         if self.api.weather_entity is self:
             self.api.weather_entity = None
             self.coordinator.async_update_listeners()
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Write the weather state and send refreshed forecasts to subscribers."""
+        super()._handle_coordinator_update()
+        self.hass.async_create_task(self.async_update_listeners(None))
 
     # HA declares a cached descriptor; retain this integration's property semantics.
     @property
