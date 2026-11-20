@@ -248,6 +248,7 @@ def install_home_assistant_shims() -> None:
     _set_attributes(config_validation, string=str)
     _set_attributes(aiohttp_client, async_get_clientsession=lambda hass: None)
     _set_attributes(update_coordinator, DataUpdateCoordinator=DataUpdateCoordinator)
+    _set_attributes(update_coordinator, UpdateFailed=type("UpdateFailed", (Exception,), {}))
     _set_attributes(update_coordinator, CoordinatorEntity=CoordinatorEntity)
     class WeatherEntity(Entity):
         @property
