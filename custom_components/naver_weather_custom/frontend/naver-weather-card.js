@@ -32,7 +32,6 @@ const STYLE = `
     overflow: clip;
   }
   .section { padding: 6px 0; min-width: 0; }
-  .forecast-section { border-top: 1px solid var(--divider-color); }
   .swipe { touch-action: pan-y; user-select: none; }
   .location-label {
     font-size: 15px;

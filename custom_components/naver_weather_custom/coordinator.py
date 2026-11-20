@@ -10,7 +10,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers.storage import Store
-from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
+from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .api_nweather import NWeatherAPI
 from .const import BRAND, DOMAIN
@@ -75,6 +75,18 @@ class NWeatherDataUpdateCoordinator(DataUpdateCoordinator[dict[str, object]]):
 
     async def _async_update_data(self) -> dict[str, object]:
         """Refresh the API payload and expose it to all subscribed entities."""
+        if self.api.location_entity is not None and self.api.area is None:
+            # The phone's location sensor has no Locality yet (usually just after HA starts):
+            # keep the recent payload and ask again at the next refresh instead of failing.
+            if self.data is not None and self.has_recent_data:
+                self.logger.debug("Location of %s not known yet; keeping the current data",
+                                  self.api.location_entity)
+                return self.data
+            # As for a failed fetch: HA writes states only when success changes, so tell
+            # entities once the last good payload has expired.
+            if not self.has_recent_data:
+                self.async_update_listeners()
+            raise UpdateFailed("위치 센서의 위치 정보를 기다리는 중입니다.")
         fetch: _FetchState | None = self.hass.data.get(f"{DOMAIN}_fetch")
         if fetch is None:
             fetch = self.hass.data[f"{DOMAIN}_fetch"] = _FetchState()

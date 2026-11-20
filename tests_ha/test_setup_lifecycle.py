@@ -386,6 +386,92 @@ async def test_location_queries_change_on_refresh_while_all_entry_ids_stay_stabl
 
 
 @pytest.mark.asyncio
+async def test_location_without_locality_at_startup_keeps_stored_values_without_error(hass, hass_storage, caplog):
+    location_entity = "sensor.synthetic_location"
+    hass.states.async_set(location_entity, "synthetic", {})
+    moving = MockConfigEntry(domain=DOMAIN, data={CONF_LOCATION_ENTITY: location_entity, CONF_TODAY: True},
+                             unique_id=f"location:{location_entity}")
+    moving.add_to_hass(hass)
+    key = f"{DOMAIN}.{moving.entry_id}"
+    hass_storage[key] = {"version": 1, "minor_version": 1, "key": key, "data": {
+        "saved_at": 1000.0, "result": {NOW_TEMP[0]: 13.8}, "forecast": [], "forecast_hour": [],
+        "weathertype": "맑음",
+    }}
+    areas = []
+
+    async def update(api):
+        areas.append(api.area)
+        api.result = {NOW_TEMP[0]: 9.0}
+
+    with patch.object(NWeatherAPI, "update", update), patch.object(
+        coordinator_module, "time", lambda: 1000.0 + 600
+    ):
+        assert await hass.config_entries.async_setup(moving.entry_id)
+        await hass.async_block_till_done()
+        assert moving.state is ConfigEntryState.LOADED and areas == []
+        temperature = er.async_get(hass).async_get_entity_id(
+            "sensor", DOMAIN, f"location_{moving.entry_id}:{NOW_TEMP[0]}"
+        )
+        assert temperature is not None
+        state = hass.states.get(temperature)
+        assert state is not None and float(state.state) == 13.8
+
+        async_fire_time_changed(hass, dt_util.utcnow() + timedelta(minutes=11))
+        await hass.async_block_till_done()
+        assert areas == []
+        state = hass.states.get(temperature)
+        assert state is not None and float(state.state) == 13.8
+
+        hass.states.async_set(location_entity, "synthetic", {"Locality": "테스트시", "Sub Locality": "첫동"})
+        async_fire_time_changed(hass, dt_util.utcnow() + timedelta(minutes=22))
+        await hass.async_block_till_done()
+        assert areas == ["테스트시 첫동 날씨"]
+        state = hass.states.get(temperature)
+        assert state is not None and float(state.state) == 9.0
+        assert not [r for r in caplog.records if r.levelname == "ERROR" and DOMAIN in r.name]
+        assert await hass.config_entries.async_unload(moving.entry_id)
+        await hass.async_block_till_done()
+
+
+@pytest.mark.asyncio
+async def test_location_without_locality_expiring_stored_values_become_unavailable(hass, hass_storage):
+    location_entity = "sensor.synthetic_location"
+    hass.states.async_set(location_entity, "synthetic", {})
+    moving = MockConfigEntry(domain=DOMAIN, data={CONF_LOCATION_ENTITY: location_entity, CONF_TODAY: True},
+                             unique_id=f"location:{location_entity}")
+    moving.add_to_hass(hass)
+    key = f"{DOMAIN}.{moving.entry_id}"
+    hass_storage[key] = {"version": 1, "minor_version": 1, "key": key, "data": {
+        "saved_at": 1000.0, "result": {NOW_TEMP[0]: 13.8}, "forecast": [], "forecast_hour": [],
+        "weathertype": "맑음",
+    }}
+    now = [1000.0 + 55 * 60]
+
+    async def update(api):
+        raise AssertionError("no fetch while the location is unknown")
+
+    with patch.object(NWeatherAPI, "update", update), patch.object(
+        coordinator_module, "time", lambda: now[0]
+    ), patch.object(coordinator_module, "monotonic", lambda: now[0]):
+        assert await hass.config_entries.async_setup(moving.entry_id)
+        await hass.async_block_till_done()
+        temperature = er.async_get(hass).async_get_entity_id(
+            "sensor", DOMAIN, f"location_{moving.entry_id}:{NOW_TEMP[0]}"
+        )
+        assert temperature is not None
+        state = hass.states.get(temperature)
+        assert state is not None and float(state.state) == 13.8
+
+        now[0] += 11 * 60
+        async_fire_time_changed(hass, dt_util.utcnow() + timedelta(minutes=11))
+        await hass.async_block_till_done()
+        state = hass.states.get(temperature)
+        assert state is not None and state.state == STATE_UNAVAILABLE
+        assert await hass.config_entries.async_unload(moving.entry_id)
+        await hass.async_block_till_done()
+
+
+@pytest.mark.asyncio
 async def test_location_config_flow_stores_only_sensor_and_today_and_rejects_duplicates(hass):
     location_entity = "sensor.synthetic_location"
     hass.states.async_set(location_entity, "synthetic", {"Locality": "테스트시 &"})
