@@ -466,12 +466,18 @@ def verify_touch(browser: Browser, base: str, shots: Shots, errors: list[str]) -
         temperature(hourly, "21.0°", "card A before touch swipe")
         temperature(current, "21.5°", "card A before touch swipe")
         start, end, y = drag_points(current)
+        page.evaluate("""() => { window.__ev = []; for (const t of ['pointerdown','pointermove','pointerup','pointercancel','touchstart','touchend','touchcancel','click']) window.addEventListener(t, e => window.__ev.push([t, e.pointerType||'', Math.round(e.clientX||0), Math.round(e.clientY||0), (e.composedPath()[0]||{}).className||(e.composedPath()[0]||{}).tagName, performance.now()|0]), true); }""")
+        print("DEBUG points", start, end, y, page.viewport_size, flush=True)
         session = context.new_cdp_session(page)
         session.send("Input.dispatchTouchEvent", {"type": "touchStart", "touchPoints": [{"x": start, "y": y}]})
         for step in range(1, 9):
             x = start + (end - start) * step / 8
             session.send("Input.dispatchTouchEvent", {"type": "touchMove", "touchPoints": [{"x": x, "y": y}]})
         session.send("Input.dispatchTouchEvent", {"type": "touchEnd", "touchPoints": []})
+        page.wait_for_timeout(2000)
+        print("DEBUG events", page.evaluate("() => JSON.stringify(window.__ev)"), flush=True)
+        print("DEBUG text", current.inner_text(), flush=True)
+        page.screenshot(path=str(shots.out / "debug-touch-page.png"), full_page=True)
         verify_switched(current, hourly, "card A after touch swipe")
         shots.card(card, "card-a-touch-390")
     finally:
