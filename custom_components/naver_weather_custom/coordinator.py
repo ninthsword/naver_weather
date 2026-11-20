@@ -1,5 +1,7 @@
 """Shared update coordinator for the Naver Weather integration."""
 
+import asyncio
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from time import monotonic, time
 from typing import cast
@@ -14,10 +16,19 @@ from .api_nweather import NWeatherAPI
 from .const import BRAND, DOMAIN
 
 UPDATE_INTERVAL = timedelta(minutes=10)
+FETCH_GAP = 30.0
 # How long entities keep the last good payload while refreshes fail.
 STALE_DATA_LIMIT = timedelta(hours=1)
 STORAGE_VERSION = 1
 _DATETIME_KEY = "__datetime__"
+
+
+@dataclass
+class _FetchState:
+    """Coordinate location refreshes across entries for this HA run."""
+
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    last_end: float | None = None
 
 
 def _encode(value: object) -> object:
@@ -55,6 +66,8 @@ class NWeatherDataUpdateCoordinator(DataUpdateCoordinator[dict[str, object]]):
             config_entry=entry,
         )
         self.api = api
+        self._first_refresh = True
+        self._fetch_shutdown = False
         self.last_good_refresh: float | None = None
         self._store: Store[dict[str, object]] = Store(
             hass, STORAGE_VERSION, f"{DOMAIN}.{entry.entry_id}"
@@ -62,8 +75,31 @@ class NWeatherDataUpdateCoordinator(DataUpdateCoordinator[dict[str, object]]):
 
     async def _async_update_data(self) -> dict[str, object]:
         """Refresh the API payload and expose it to all subscribed entities."""
+        fetch: _FetchState | None = self.hass.data.get(f"{DOMAIN}_fetch")
+        if fetch is None:
+            fetch = self.hass.data[f"{DOMAIN}_fetch"] = _FetchState()
+
         try:
-            await self.api.update()
+            while True:
+                if not self._first_refresh and fetch.last_end is not None:
+                    delay = fetch.last_end + FETCH_GAP - monotonic()
+                    if delay > 0:
+                        await asyncio.sleep(delay)
+                async with fetch.lock:
+                    if self._fetch_shutdown:
+                        return self.data
+                    if (
+                        not self._first_refresh
+                        and fetch.last_end is not None
+                        and monotonic() < fetch.last_end + FETCH_GAP
+                    ):
+                        continue
+                    try:
+                        await self.api.update()
+                    finally:
+                        fetch.last_end = monotonic()
+                        self._first_refresh = False
+                    break
         except Exception:
             # HA notifies entities only on the first of consecutive failures;
             # tell them once the last good payload has expired.
@@ -80,6 +116,11 @@ class NWeatherDataUpdateCoordinator(DataUpdateCoordinator[dict[str, object]]):
         }))
         self._store.async_delay_save(lambda: payload, 1)
         return self.api.result
+
+    async def async_shutdown(self) -> None:
+        """Stop a queued location refresh when its config entry unloads."""
+        self._fetch_shutdown = True
+        await super().async_shutdown()
 
     async def async_config_entry_first_refresh(self) -> None:
         """Start from the stored payload when the first refresh fails within the limit."""

@@ -35,6 +35,8 @@ jobs:
         run: .venv/bin/ruff check --no-cache custom_components tests tests_ha browser_service
       - name: Lightweight offline tests
         run: .venv/bin/python -B -m unittest discover -s tests -v
+      - name: Weather card frontend tests
+        run: node --test 'tests_frontend/*.test.mjs'
       - name: Browser service offline tests
         run: .venv/bin/python -B -m unittest discover -s browser_service -v
       - name: Real Home Assistant options-flow and parser regressions
@@ -76,13 +78,13 @@ jobs:
       - name: Check compatibility types
         run: |
           devtools/pyright/node_modules/.bin/pyright --project pyrightconfig.json --pythonpath .venv-ha2026.9/bin/python
-          devtools/pyright/node_modules/.bin/pyright --project pyrightconfig.json --pythonpath .venv-ha2026.9/bin/python tests_ha/conftest.py tests_ha/test_setup_lifecycle.py
+          devtools/pyright/node_modules/.bin/pyright --project pyrightconfig.json --pythonpath .venv-ha2026.9/bin/python tests_ha/conftest.py tests_ha/test_setup_lifecycle.py tests_ha/test_card_frontend.py tests_ha/test_fetch_gap.py
       - name: Run offline and real Home Assistant tests in separate processes
         run: |
           .venv-ha2026.9/bin/python -B -m unittest discover -s tests -v
           .venv-ha2026.9/bin/python -B -m unittest discover -s tests_ha -p test_options_flow.py -v
           .venv-ha2026.9/bin/python -B -m unittest discover -s tests_ha -p test_parser_dependency.py -v
-          .venv-ha2026.9/bin/python -B -m pytest -p no:cacheprovider --disable-socket --allow-unix-socket -o asyncio_mode=auto tests_ha/test_setup_lifecycle.py
+          .venv-ha2026.9/bin/python -B -m pytest -p no:cacheprovider --disable-socket --allow-unix-socket -o asyncio_mode=auto tests_ha/test_setup_lifecycle.py tests_ha/test_card_frontend.py tests_ha/test_fetch_gap.py
       - name: Lint compatibility sources
         run: .venv-ha2026.9/bin/ruff check --no-cache custom_components tests tests_ha
 
@@ -143,13 +145,13 @@ jobs:
           .venv-ha2026.10/bin/python -B -m unittest discover -s devtools -p test_ha2026_10_typing.py -v
       - name: Check compatibility collection, types, tests, and lint
         run: |
-          .venv-ha2026.10/bin/python -B -m pytest --collect-only -p no:cacheprovider --disable-socket --allow-unix-socket -o asyncio_mode=auto tests_ha/test_setup_lifecycle.py
+          .venv-ha2026.10/bin/python -B -m pytest --collect-only -p no:cacheprovider --disable-socket --allow-unix-socket -o asyncio_mode=auto tests_ha/test_setup_lifecycle.py tests_ha/test_card_frontend.py tests_ha/test_fetch_gap.py
           devtools/pyright/node_modules/.bin/pyright --project pyrightconfig.json --pythonpath .venv-ha2026.10/bin/python
-          devtools/pyright/node_modules/.bin/pyright --project pyrightconfig.json --pythonpath .venv-ha2026.10/bin/python tests_ha/conftest.py tests_ha/test_setup_lifecycle.py
+          devtools/pyright/node_modules/.bin/pyright --project pyrightconfig.json --pythonpath .venv-ha2026.10/bin/python tests_ha/conftest.py tests_ha/test_setup_lifecycle.py tests_ha/test_card_frontend.py tests_ha/test_fetch_gap.py
           .venv-ha2026.10/bin/python -B -m unittest discover -s tests -v
           .venv-ha2026.10/bin/python -B -m unittest discover -s tests_ha -p test_options_flow.py -v
           .venv-ha2026.10/bin/python -B -m unittest discover -s tests_ha -p test_parser_dependency.py -v
-          .venv-ha2026.10/bin/python -B -m pytest -p no:cacheprovider --disable-socket --allow-unix-socket -o asyncio_mode=auto tests_ha/test_setup_lifecycle.py
+          .venv-ha2026.10/bin/python -B -m pytest -p no:cacheprovider --disable-socket --allow-unix-socket -o asyncio_mode=auto tests_ha/test_setup_lifecycle.py tests_ha/test_card_frontend.py tests_ha/test_fetch_gap.py
           .venv-ha2026.10/bin/ruff check --no-cache custom_components tests tests_ha
       - name: Check typing preparation tools
         run: |

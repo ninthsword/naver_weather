@@ -130,6 +130,12 @@ UTC RFC-3339 형식의 날짜/시간 문자열로 출력됩니다.
 |today| (옵션) 주간예보에 오늘날씨를 포함||O|
 <br>
 
+통합구성요소는 한 번에 한 지역의 날씨와 대기질을 갱신합니다. Home Assistant 시작 후
+또는 항목을 추가하거나 다시 불러오거나 설정을 재시도한 후의 첫 갱신은 진행 중인 지역
+갱신이 끝나면 바로 시작합니다. 이후의 갱신은 어느 지역이든 직전 갱신이 끝난 시점부터
+최소 30초가 지난 뒤 시작하므로, 여러 지역을 설정하면 10분 갱신 주기가 대기 시간만큼
+길어질 수 있습니다.
+
 ### 현재 위치 날씨
 
 Home Assistant Companion 앱에서 지오코딩된 위치 센서를 활성화한 뒤, 네이버 날씨
@@ -170,6 +176,52 @@ Home Assistant Companion 앱에서 지오코딩된 위치 센서를 활성화한
 ```
 
 기존 대시보드와 템플릿 YAML은 자동으로 변경되지 않습니다.
+
+### 날씨 카드
+
+대시보드를 편집하고 **카드 추가**에서 **네이버 날씨 카드**를 검색하세요.
+**날씨 엔티티**에서 현재 위치와 고정 지역 항목을 함께 선택할 수 있습니다. 카드는
+통합구성요소가 갱신될 때 새 예보를 받습니다. 처음 통합구성요소를 추가할 때 브라우저가
+이미 열려 있었거나 버전을 올린 뒤 카드가 보이지 않으면 앱이나 페이지를 한 번 새로고침하세요.
+
+| 옵션 | 화면의 이름과 설정 | 기본값 |
+| --- | --- | --- |
+| `entities` | **날씨 엔티티**. 표시할 네이버 날씨 엔티티를 하나 이상 선택합니다. | 카드 추가 시 표시 가능한 엔티티 중 ID 순으로 첫 번째 |
+| `mode` | **표시 방식**. 시간별(`hourly`), 일별(`daily`), 시간별+일별(`both`) 중 선택합니다. | 시간별+일별 |
+| `show_current` | **현재 날씨 표시**. 현재 날씨를 예보 위에 표시합니다. | 켜짐 |
+| `hours` | **시간별 개수**. 1~24개 중 선택합니다. | 18개 |
+| `days` | **일별 일수**. 1~10일 중 선택합니다. | 10일 |
+| `switcher` | **지역 전환**. 슬라이드(`swipe`) 또는 버튼(`buttons`)으로 지역을 바꿉니다. | 슬라이드 |
+| `remember` | **마지막 지역 기억**. 브라우저에 마지막으로 선택한 지역을 저장합니다. | 켜짐 |
+| `icon_path` | **아이콘 폴더**. 같은 Home Assistant 서버의 폴더 경로를 지정합니다. | 비워 둠 (Home Assistant 아이콘) |
+
+슬라이드를 선택하면 현재 날씨 영역을 좌우로 밀어 지역을 전환합니다. 현재 날씨를
+숨겼다면 지역 이름 줄을 밀면 됩니다. 시간별·일별 예보 영역 안에서 밀면 해당
+예보의 페이지만 바뀝니다.
+
+직접 준비한 아이콘을 쓰려면 `/local/icons/naver_weather`처럼 `/`로 시작하는 같은
+서버의 경로를 입력하고 파일 이름을 `icon_flat_<wtN>.svg` 형식으로 맞추세요.
+예를 들어 `wt1`에 해당하는 파일은 `icon_flat_wt1.svg`입니다. 통합구성요소에는
+네이버 이미지가 포함되어 있지 않습니다.
+
+YAML에서 `workday_entities`에 Workday 통합구성요소의 이진 센서를 오늘부터 날짜
+오프셋 순서대로 넣으면, 해당 날짜의 센서가 `off`일 때 요일 이름이 붉게 표시됩니다.
+기본값은 토·일요일을 붉게 표시합니다. `users`에는 사용자 이름별 시작 날씨 엔티티를
+지정할 수 있습니다. 마지막 지역을 기억한 경우에는 그 지역을 먼저 열고, 기억한
+지역과 사용자별 지정이 모두 없으면 목록의 첫 번째 지역을 엽니다. 아래 엔티티 ID와
+사용자 이름은 실제 값으로 바꾸세요.
+
+```yaml
+type: custom:naver-weather-card
+entities:
+  - weather.example_first
+  - weather.example_second
+users:
+  "사용자 이름": weather.example_second
+workday_entities:
+  - binary_sensor.example_workday_today
+  - binary_sensor.example_workday_tomorrow
+```
 
 ### 브라우저 서비스 (선택 사항)
 
@@ -312,10 +364,11 @@ Assistant에 통합구성요소를 설치하거나 어떤 서비스·장치도 �
 uv venv --python 3.14.7 .venv-ha2026.9
 uv pip sync --python .venv-ha2026.9/bin/python --require-hashes requirements-ha2026.9.lock
 npm ci --prefix devtools/pyright --ignore-scripts --no-audit --no-fund
+devtools/pyright/node_modules/.bin/pyright --project pyrightconfig.json --pythonpath .venv-ha2026.9/bin/python tests_ha/conftest.py tests_ha/test_setup_lifecycle.py tests_ha/test_card_frontend.py tests_ha/test_fetch_gap.py
 .venv-ha2026.9/bin/python -B -m unittest discover -s tests -v
 .venv-ha2026.9/bin/python -B -m unittest discover -s tests_ha -p test_options_flow.py -v
 .venv-ha2026.9/bin/python -B -m unittest discover -s tests_ha -p test_parser_dependency.py -v
-.venv-ha2026.9/bin/python -B -m pytest -p no:cacheprovider --disable-socket --allow-unix-socket -o asyncio_mode=auto tests_ha/test_setup_lifecycle.py
+.venv-ha2026.9/bin/python -B -m pytest -p no:cacheprovider --disable-socket --allow-unix-socket -o asyncio_mode=auto tests_ha/test_setup_lifecycle.py tests_ha/test_card_frontend.py tests_ha/test_fetch_gap.py
 ```
 
 가벼운 기존 테스트와 실제 Home Assistant pytest 테스트는 별도 프로세스에서
@@ -361,13 +414,13 @@ uv pip sync --python .venv-ha2026.10/bin/python --require-hashes requirements-ha
 npm ci --prefix devtools/pyright --ignore-scripts --no-audit --no-fund
 .venv-ha2026.10/bin/python -B devtools/ha2026_10_typing.py
 .venv-ha2026.10/bin/python -B -m unittest discover -s devtools -p test_ha2026_10_typing.py -v
-.venv-ha2026.10/bin/python -B -m pytest --collect-only -p no:cacheprovider --disable-socket --allow-unix-socket -o asyncio_mode=auto tests_ha/test_setup_lifecycle.py
+.venv-ha2026.10/bin/python -B -m pytest --collect-only -p no:cacheprovider --disable-socket --allow-unix-socket -o asyncio_mode=auto tests_ha/test_setup_lifecycle.py tests_ha/test_card_frontend.py tests_ha/test_fetch_gap.py
 devtools/pyright/node_modules/.bin/pyright --project pyrightconfig.json --pythonpath .venv-ha2026.10/bin/python
-devtools/pyright/node_modules/.bin/pyright --project pyrightconfig.json --pythonpath .venv-ha2026.10/bin/python tests_ha/conftest.py tests_ha/test_setup_lifecycle.py
+devtools/pyright/node_modules/.bin/pyright --project pyrightconfig.json --pythonpath .venv-ha2026.10/bin/python tests_ha/conftest.py tests_ha/test_setup_lifecycle.py tests_ha/test_card_frontend.py tests_ha/test_fetch_gap.py
 .venv-ha2026.10/bin/python -B -m unittest discover -s tests -v
 .venv-ha2026.10/bin/python -B -m unittest discover -s tests_ha -p test_options_flow.py -v
 .venv-ha2026.10/bin/python -B -m unittest discover -s tests_ha -p test_parser_dependency.py -v
-.venv-ha2026.10/bin/python -B -m pytest -p no:cacheprovider --disable-socket --allow-unix-socket -o asyncio_mode=auto tests_ha/test_setup_lifecycle.py
+.venv-ha2026.10/bin/python -B -m pytest -p no:cacheprovider --disable-socket --allow-unix-socket -o asyncio_mode=auto tests_ha/test_setup_lifecycle.py tests_ha/test_card_frontend.py tests_ha/test_fetch_gap.py
 .venv-ha2026.10/bin/ruff check --no-cache custom_components tests tests_ha
 devtools/pyright/node_modules/.bin/pyright --project pyrightconfig.json --pythonpath .venv-ha2026.10/bin/python devtools/ha2026_10_typing.py devtools/test_ha2026_10_typing.py
 .venv-ha2026.10/bin/ruff check --no-cache devtools/ha2026_10_typing.py devtools/test_ha2026_10_typing.py
@@ -380,6 +433,11 @@ devtools/pyright/node_modules/.bin/pyright --project pyrightconfig.json --python
 구성 흐름으로 통합구성요소를 추가하고, 한국어 문구와 기기 및 센서, 옵션 화면을
 확인하며, 기기 페이지를 데스크톱과 휴대폰 너비로 열어 각 화면의 스크린샷을
 저장합니다.
+
+합성 지역을 하나 더 추가하고 카드 선택기와 편집기에서 네이버 날씨 카드를 저장합니다.
+1440px와 390px에서 현재 날씨, 시간별 및 일별 예보, 두 종류의 지역 전환, 시간별
+예보 페이지 전환을 확인합니다. 두 너비에서 전환 전후 카드와 일별 예보를 저장하며,
+휴대폰 환경에서 터치로 지역을 전환하고 현재습도 칩의 상세 화면도 확인합니다.
 
 이 검증은 네이버, 운영 중인 Home Assistant, 장치에 연결하지 않으며 네트워크가
 필요하지 않습니다. 다만 네트워크가 있으면 새로 설치한 Home Assistant와 마찬가지로

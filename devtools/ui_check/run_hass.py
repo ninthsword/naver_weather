@@ -17,6 +17,10 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
+# Import Home Assistant first, as its own entry point does: it installs probatio as voluptuous, so the
+# integration's websocket command schema resolves to the same validator HA uses for every message.
+import homeassistant  # noqa: E402, F401
+
 from custom_components.naver_weather_custom.api_nweather import (  # noqa: E402
     KST,
     NWeatherAPI,
@@ -61,19 +65,21 @@ async def _synthetic_update(api: NWeatherAPI) -> None:
     """Fill the parser's result keys and forecast rows with synthetic values; opens no session."""
     now = datetime.now(KST).replace(minute=0, second=0, microsecond=0)
     published = now.isoformat()
+    second = "검증2동" in (api.area or "")
+    offset = 50 if second else 0
     api.weathertype = "wt1"
     api.result = {
-        LOCATION[0]: "검증시 검증구",
+        LOCATION[0]: "검증시 검증2동" if second else "검증시 검증구",
         NOW_CAST[0]: "어제보다 1° 높아요",
         NOW_WEATHER[0]: "맑음",
-        NOW_TEMP[0]: "21.5",
+        NOW_TEMP[0]: f"{21.5 + offset:.1f}",
         NOW_HUMI[0]: "55",
         CONDITION[0]: "sunny",
         WIND_SPEED[0]: "2.1",
         WIND_DIR[0]: "북서",
-        MIN_TEMP[0]: "14",
-        MAX_TEMP[0]: "24",
-        FEEL_TEMP[0]: "21.0",
+        MIN_TEMP[0]: str(14 + offset),
+        MAX_TEMP[0]: str(24 + offset),
+        FEEL_TEMP[0]: f"{21.0 + offset:.1f}",
         RAINFALL[0]: "0",
         UV_GRADE[0]: "보통",
         NDUST[0]: "28",
@@ -86,9 +92,9 @@ async def _synthetic_update(api: NWeatherAPI) -> None:
         NO2_GRADE[0]: "좋음",
         CAI_GRADE[0]: "좋음",
         TOMORROW_AM[0]: "맑음",
-        TOMORROW_MIN[0]: "13",
+        TOMORROW_MIN[0]: str(13 + offset),
         TOMORROW_PM[0]: "구름많음",
-        TOMORROW_MAX[0]: "23",
+        TOMORROW_MAX[0]: str(23 + offset),
         RAINY_START[0]: "비 소식 없음",
         RAINY_START_TMR[0]: "비 소식 없음",
         RAIN_PERCENT[0]: "10.0",
@@ -99,8 +105,8 @@ async def _synthetic_update(api: NWeatherAPI) -> None:
     api.forecast = [
         {
             "datetime": (now + timedelta(days=day)).replace(hour=0),
-            "templow": 13.0 + day,
-            "temperature": 23.0 + day,
+            "templow": 13.0 + day + offset,
+            "temperature": 23.0 + day + offset,
             "condition": "partlycloudy",
             "condition_am": "sunny",
             "condition_pm": "partlycloudy",
@@ -114,7 +120,7 @@ async def _synthetic_update(api: NWeatherAPI) -> None:
     api.forecast_hour = [
         {
             "datetime": now + timedelta(hours=hour),
-            "native_temperature": 21.0 - hour % 6,
+            "native_temperature": 21.0 - hour % 6 + offset,
             "condition": "sunny",
             "weathertype_hour": "wt1",
             "precipitation_probability": 10,

@@ -6,6 +6,7 @@
   "issue_tracker": "https://github.com/ninthsword/naver_weather/issues",
   "requirements": ["beautifulsoup4==4.12.3"],
   "dependencies": [],
+  "after_dependencies": ["frontend", "http"],
   "codeowners": ["@miumida", "@gugu927", "@ninthsword"],
   "version": "2.5.3-0.9",
   "iot_class": "cloud_polling"

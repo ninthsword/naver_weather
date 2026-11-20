@@ -60,11 +60,15 @@ def install_home_assistant_shims() -> None:
     voluptuous = _module("voluptuous")
     _set_attributes(voluptuous, Schema=lambda value: value)
     _set_attributes(voluptuous, Optional=OptionalKey)
+    _set_attributes(voluptuous, Required=OptionalKey)
     _set_attributes(voluptuous, All=lambda *values: values)
     _set_attributes(voluptuous, Coerce=lambda value: value)
     _set_attributes(voluptuous, Range=lambda **kwargs: kwargs)
 
     homeassistant = _module("homeassistant")
+    auth = _module("homeassistant.auth")
+    permissions = _module("homeassistant.auth.permissions")
+    permissions_const = _module("homeassistant.auth.permissions.const")
     config_entries = _module("homeassistant.config_entries")
     core = _module("homeassistant.core")
     helpers = _module("homeassistant.helpers")
@@ -75,12 +79,23 @@ def install_home_assistant_shims() -> None:
     selector = _module("homeassistant.helpers.selector")
     exceptions = _module("homeassistant.exceptions")
     components = _module("homeassistant.components")
+    frontend = _module("homeassistant.components.frontend")
+    http = _module("homeassistant.components.http")
+    http_server = _module("homeassistant.components.http.server")
+    websocket_api = _module("homeassistant.components.websocket_api")
+    websocket_connection = _module("homeassistant.components.websocket_api.connection")
+    websocket_decorators = _module("homeassistant.components.websocket_api.decorators")
+    entity_registry = _module("homeassistant.helpers.entity_registry")
     sensor = _module("homeassistant.components.sensor")
     weather = _module("homeassistant.components.weather")
     weather_const = _module("homeassistant.components.weather.const")
     const = _module("homeassistant.const")
 
     _set_attributes(homeassistant, config_entries=config_entries)
+    _set_attributes(homeassistant, auth=auth)
+    _set_attributes(auth, permissions=permissions)
+    _set_attributes(permissions, const=permissions_const)
+    _set_attributes(permissions_const, POLICY_READ="read")
     _set_attributes(homeassistant, core=core)
     _set_attributes(homeassistant, helpers=helpers)
     _set_attributes(homeassistant, components=components)
@@ -92,6 +107,15 @@ def install_home_assistant_shims() -> None:
     _set_attributes(selector, EntitySelectorConfig=lambda **kwargs: kwargs)
     _set_attributes(homeassistant, exceptions=exceptions)
     _set_attributes(helpers, update_coordinator=update_coordinator)
+    _set_attributes(helpers, entity_registry=entity_registry)
+    _set_attributes(components, frontend=frontend, http=http, websocket_api=websocket_api)
+    _set_attributes(frontend, add_extra_js_url=Mock())
+    _set_attributes(http, server=http_server)
+    _set_attributes(http_server, StaticPathConfig=Mock())
+    _set_attributes(websocket_api, connection=websocket_connection, decorators=websocket_decorators)
+    _set_attributes(websocket_decorators, websocket_command=lambda schema: lambda function: function)
+    _set_attributes(websocket_api, async_register_command=Mock())
+    _set_attributes(websocket_connection, ActiveConnection=object)
     _set_attributes(components, sensor=sensor)
     _set_attributes(components, weather=weather)
 
@@ -152,6 +176,9 @@ def install_home_assistant_shims() -> None:
         def async_update_listeners(self):
             self.listener_updates += 1
 
+        async def async_shutdown(self):
+            return None
+
         async def async_config_entry_first_refresh(self):
             try:
                 self.data = await self._async_update_data()
@@ -192,6 +219,7 @@ def install_home_assistant_shims() -> None:
             return None
 
     _set_attributes(config_entries, ConfigEntry=ConfigEntry)
+    _set_attributes(config_entries, ConfigEntryState=types.SimpleNamespace(LOADED="loaded"))
     _set_attributes(config_entries, ConfigFlowResult=dict)
     _set_attributes(config_entries, ConfigEntryNotReady=ConfigEntryNotReady)
     _set_attributes(exceptions, ConfigEntryNotReady=ConfigEntryNotReady)
@@ -314,12 +342,15 @@ class FakeEntry:
 
 
 class FakeHass:
-    """Only the API constructor needs a config-entry manager."""
+    """Supply the state and config surfaces used by the API and coordinator."""
 
     config_entries = types.SimpleNamespace(async_update_entry=lambda **kwargs: None)
 
     def __init__(self):
         self.states: dict[str, types.SimpleNamespace] = {}
+        self.data: dict[str, object] = {}
+        self.config = types.SimpleNamespace(components=set())
+        self.http = None
 
 
 class FakeNode:
@@ -441,6 +472,7 @@ class IntegrationContractTest(unittest.TestCase):
         assert isinstance(previous.args[0].slice, ast.Constant)
         self.assertEqual(previous.args[0].slice.value, 0)
 
+    @patch.object(coordinator_module, "FETCH_GAP", 0)
     def test_single_ten_minute_coordinator_reports_later_failure(self):
         entry = FakeEntry()
         api = api_module.NWeatherAPI(FakeHass(), entry, 1)
@@ -465,6 +497,7 @@ class IntegrationContractTest(unittest.TestCase):
         asyncio.run(coordinator.async_request_refresh())
         self.assertFalse(coordinator.last_update_success)
 
+    @patch.object(coordinator_module, "FETCH_GAP", 0)
     def test_failed_refreshes_keep_last_good_data_for_one_hour(self):
         entry = FakeEntry()
         api = api_module.NWeatherAPI(FakeHass(), entry, 1)
