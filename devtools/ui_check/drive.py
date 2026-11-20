@@ -295,10 +295,20 @@ def save_dashboard(page: Page, cards: list[dict[str, object]]) -> None:
     )
 
 
+def open_weather_view(page: Page, base: str) -> None:
+    """Open the check's dashboard and wait until HA's launch screen has left the page.
+
+    The launch screen fades out over the dashboard (class 'removing') before HA removes it;
+    a pointer or touch gesture made during the fade lands on it and the browser cancels it.
+    """
+    page.goto(base + WEATHER_VIEW)
+    page.locator("#ha-launch-screen").wait_for(state="detached", timeout=WAIT_MS)
+
+
 def add_card_from_picker(page: Page, base: str, shots: Shots) -> None:
     create_dashboard(page)
     save_dashboard(page, [])
-    page.goto(base + WEATHER_VIEW)
+    open_weather_view(page, base)
     page.get_by_role("button", name=re.compile(r"대시보드 (편집|수정)")).click()
     page.get_by_role("button", name=re.compile(r"카드 ?추가")).click()
     # HA 2026.10's add-card dialog opens on its entity tab; the card search is on the "카드별" tab.
@@ -459,7 +469,7 @@ def verify_touch(browser: Browser, base: str, shots: Shots, errors: list[str]) -
         page = context.new_page()
         watch_card_errors(page, errors)
         login(page, base)
-        page.goto(base + WEATHER_VIEW)
+        open_weather_view(page, base)
         card = page.locator("naver-weather-card").first
         current = card.locator(".current-section")
         hourly = card.locator(".hourly-grid")
@@ -491,7 +501,7 @@ def card_steps(page: Page, browser: Browser, base: str, shots: Shots, errors: li
     ])
     for viewport in (DESKTOP, PHONE):
         page.set_viewport_size(viewport)
-        page.goto(base + WEATHER_VIEW)
+        open_weather_view(page, base)
         verify_cards(page, viewport["width"], shots, start_date, second)
     verify_touch(browser, base, shots, errors)
     if errors:
