@@ -311,6 +311,8 @@ class NaverWeatherCard extends HTMLElement {
   #chooseLocation(index) {
     const id = this.#config.entities[index];
     if (!id || id === this.#entityId) return;
+    // A drag still held from the previous location must not override this choice on release.
+    this.#cancelDrag();
     this.#entityId = id;
     if (this.#config.remember) {
       try {
@@ -360,6 +362,19 @@ class NaverWeatherCard extends HTMLElement {
       }
       if (model.lookupRetryDue(entry.entitiesReply, entry.lookupAttempt, Date.now())) {
         void this.#lookupEntities(entry);
+      } else if (entry.entitiesReply === "ok") {
+        // A companion entity that was shown before has gone (renamed or removed): ask again,
+        // keeping the shown data meanwhile. Entities never present (disabled) do not trigger this.
+        entry.seen ??= new Set();
+        let gone = false;
+        for (const entityId of Object.values(entry.entities)) {
+          if (this.#hass.states[entityId]) entry.seen.add(entityId);
+          else if (entry.seen.has(entityId)) gone = true;
+        }
+        if (gone && model.retryDue(entry.lookupAttempt, Date.now())) {
+          entry.seen = new Set();
+          void this.#lookupEntities(entry, { keepShown: true });
+        }
       }
       this.#subscribeForecasts(entry);
     }
@@ -384,10 +399,10 @@ class NaverWeatherCard extends HTMLElement {
     return entry;
   }
 
-  async #lookupEntities(entry) {
+  async #lookupEntities(entry, { keepShown = false } = {}) {
     const { token } = entry;
     entry.lookupAttempt = Date.now();
-    entry.entitiesReply = "pending";
+    if (!keepShown) entry.entitiesReply = "pending";
     try {
       const reply = await this.#hass.callWS({
         type: "naver_weather_custom/card_entities", entity_id: entry.id,

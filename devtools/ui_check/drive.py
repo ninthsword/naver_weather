@@ -44,12 +44,16 @@ SHOWN_MS = 300
 LOADING_TEXTS = ("불러오는 중", "예보 대기")
 # Installed on a location button just before it is clicked: from the click on, every 20 ms for
 # SAMPLE_MS, record the card's height, its text and whether its hourly grid shows `expected`.
-SAMPLE_SWITCH = """(button, [expected, ms]) => {
+SAMPLE_SWITCH = """(button, [expected, ms, name]) => {
     const root = button.getRootNode();
     const host = root.host;
     const samples = [];
     window.__naverSwitch = { before: host.getBoundingClientRect().height, samples: null };
-    button.addEventListener("click", () => {
+    // Listen on the shadow root: a render may replace the button between this setup and the click.
+    const listener = (event) => {
+        const clicked = event.composedPath().find((node) => node.classList?.contains("location-button"));
+        if (!clicked || clicked.textContent !== name) return;
+        root.removeEventListener("click", listener, true);
         const start = performance.now();
         const take = () => {
             const grid = root.querySelector(".hourly-grid");
@@ -63,7 +67,8 @@ SAMPLE_SWITCH = """(button, [expected, ms]) => {
             else window.__naverSwitch.samples = samples;
         };
         take();
-    }, { capture: true, once: true });
+    };
+    root.addEventListener("click", listener, true);
 }"""
 TRANSLATE_X = """(node) => {
     const transform = getComputedStyle(node).transform;
@@ -459,7 +464,7 @@ def verify_clip(card: Locator) -> None:
 def sampled_switch(page: Page, card: Locator, name: str, expected: str, screen: str) -> None:
     """Click a location button and prove the switched-to location shows at once without shrinking."""
     button = card.get_by_role("button", name=name, exact=True)
-    button.evaluate(SAMPLE_SWITCH, [expected, SAMPLE_MS])
+    button.evaluate(SAMPLE_SWITCH, [expected, SAMPLE_MS, name])
     button.click()
     page.wait_for_timeout(100)
     content_moving(card.locator(".slide-content"), screen)
