@@ -89,6 +89,37 @@ test("six-hour and five-day paging clamps the page after a shorter or empty mess
   }
 });
 
+test("a drag follows the pointer inside the pages and resists by a third past either end", () => {
+  assert.equal(model.dragOffset(-100, 0, 3), -100);
+  assert.equal(model.dragOffset(100, 1, 3), 100);
+  assert.equal(model.dragOffset(-100, 1, 3), -100);
+  assert.equal(model.dragOffset(90, 2, 3), 90);
+  assert.equal(model.dragOffset(90, 0, 3), 30);
+  assert.equal(model.dragOffset(-90, 2, 3), -30);
+  for (const count of [0, 1]) {
+    assert.equal(model.dragOffset(90, 0, count), 30);
+    assert.equal(model.dragOffset(-90, 0, count), -30);
+  }
+  assert.equal(model.dragOffset(0, 0, 3), 0);
+  for (const dx of [NaN, Infinity, -Infinity]) assert.equal(model.dragOffset(dx, 1, 3), 0);
+});
+
+test("a release settles on the neighbour only past 40 px and never beyond the first or last page", () => {
+  assert.equal(model.settleTarget(-41, 0, 3), 1);
+  assert.equal(model.settleTarget(-40, 0, 3), 0);
+  assert.equal(model.settleTarget(40, 1, 3), 1);
+  assert.equal(model.settleTarget(41, 1, 3), 0);
+  assert.equal(model.settleTarget(-31, 1, 3), 1);
+  assert.equal(model.settleTarget(31, 1, 3), 1);
+  assert.equal(model.settleTarget(-200, 2, 3), 2);
+  assert.equal(model.settleTarget(200, 0, 3), 0);
+  for (const count of [0, 1]) {
+    assert.equal(model.settleTarget(-200, 0, count), 0);
+    assert.equal(model.settleTarget(200, 0, count), 0);
+  }
+  for (const dx of [NaN, Infinity, -Infinity]) assert.equal(model.settleTarget(dx, 1, 3), 1);
+});
+
 test("card picker selects the first visible Naver weather entity by entity ID", () => {
   assert.deepEqual(model.stubConfig({
     "weather.second": { platform: "naver_weather_custom" },
