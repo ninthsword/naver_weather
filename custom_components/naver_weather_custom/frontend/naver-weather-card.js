@@ -40,6 +40,14 @@ const STYLE = `
     text-align: center;
     overflow-wrap: anywhere;
   }
+  .retained-refresh {
+    display: block;
+    font-size: 12px;
+    line-height: 1.4;
+    color: var(--secondary-text-color);
+    text-align: center;
+    overflow-wrap: anywhere;
+  }
   .location-buttons, .chip-row, .dots {
     display: flex;
     justify-content: center;
@@ -800,6 +808,15 @@ class NaverWeatherCard extends HTMLElement {
     }
     const location = element("div", "location-row");
     location.append(element("div", "location-label", label));
+    if (current === "ready") {
+      const updatedAt = this.#weather?.attributes.retained_weather_updated_at;
+      const retained = model.retainedRefreshText(updatedAt, now, zone);
+      if (retained) {
+        const time = element("time", "retained-refresh", retained);
+        time.dateTime = updatedAt;
+        location.append(time);
+      }
+    }
     if (swipe) location.append(dots(entities.length, selected, "지역", (index) => this.#slideLocation(index)));
     const section = showCurrent ? element("section", "section current-section") : location;
     if (swipe) {

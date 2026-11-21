@@ -58,6 +58,7 @@ from .const import (
     UV_GRADE,
     WIND_DIR,
     WIND_SPEED,
+    LocationMethod,
 )
 
 if TYPE_CHECKING:
@@ -652,27 +653,34 @@ class NWeatherAPI:
         location_entity = self.location_entity
         if location_entity is not None:
             state = self.hass.states.get(location_entity)
-            return self._named_location_area(state.attributes if state else {})
+            selection = self._named_location_area(state.attributes if state else {})
+            return selection[0] if selection is not None else None
         data = self.entry.options.get(CONF_AREA, self.entry.data.get(CONF_AREA))
         if data == "날씨":
             return data
         else:
             return data + " 날씨"
 
-    def _named_location_area(self, attributes: Mapping[str, object]) -> str | None:
+    def _named_location_area(
+        self, attributes: Mapping[str, object]
+    ) -> tuple[str, LocationMethod] | None:
         locality = location_part(attributes.get("Locality"))
         if locality is not None:
             sub_locality = location_part(attributes.get("Sub Locality"))
             self._last_location_area = (
                 f"{locality} {sub_locality} 날씨" if sub_locality else f"{locality} 날씨"
             )
-        return self._last_location_area
+            return self._last_location_area, LocationMethod.SENSOR_ADDRESS
+        if self._last_location_area is not None:
+            return self._last_location_area, LocationMethod.REMEMBERED_ADDRESS
+        return None
 
-    async def async_select_area(self) -> str | None:
-        """Select a query from one reading and retain the latest valid named fallback."""
+    async def async_select_area(self) -> tuple[str, LocationMethod] | None:
+        """Select a query and its strategy from one reading."""
         location_entity = self.location_entity
         if location_entity is None:
-            return self.area
+            area = self.area
+            return (area, LocationMethod.FIXED_AREA) if area is not None else None
         state = self.hass.states.get(location_entity)
         attributes = state.attributes if state else {}
         named_area = self._named_location_area(attributes)
@@ -681,7 +689,7 @@ class NWeatherAPI:
             region = await self.hass.async_add_executor_job(resolve_admin_area, *coordinates)
             region = location_part(region)
             if region is not None:
-                return f"{region} 날씨"
+                return f"{region} 날씨", LocationMethod.COORDINATE_BOUNDARY
         return named_area
 
     @property
@@ -829,9 +837,10 @@ class NWeatherAPI:
         """Fetch weather and air data for a single selected area."""
         try:
             if area is None:
-                area = await self.async_select_area()
-            if area is None:
-                raise ValueError(f"위치 센서 {self.location_entity}의 위치 정보가 없습니다.")
+                selection = await self.async_select_area()
+                if selection is None:
+                    raise ValueError(f"위치 센서 {self.location_entity}의 위치 정보가 없습니다.")
+                area, _ = selection
             url = BSE_URL.format(area)
             url_air = url.replace("날씨", "미세먼지")
 

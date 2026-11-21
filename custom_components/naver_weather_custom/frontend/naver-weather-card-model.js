@@ -92,6 +92,20 @@ export function dateLabel(iso, timeZone) {
   return calendarDay(iso, timeZone)?.date ?? "-";
 }
 
+export function retainedRefreshText(iso, now, timeZone) {
+  if (typeof iso !== "string"
+      || !/^\d{4}-\d{2}-\d{2}T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(iso)) {
+    return null;
+  }
+  const date = asDate(iso);
+  const isoDay = iso.slice(0, 10);
+  if (!date || asDate(isoDay)?.toISOString().slice(0, 10) !== isoDay) return null;
+  const day = calendarDay(date, timeZone);
+  const clock = clockText(date, timeZone, { minute: "2-digit" });
+  const datePrefix = day.number === calendarDay(now, timeZone)?.number ? "" : day.date + " ";
+  return `최근 정상 갱신 ${datePrefix}${clock}`;
+}
+
 export function gradeColor(grade) {
   return Object.hasOwn(GRADES, grade) ? GRADES[grade] : null;
 }

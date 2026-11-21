@@ -24,6 +24,7 @@ from homeassistant.core import callback
 
 from .api_nweather import KST, filter_daily_forecast_rows
 from .const import (
+    ATTR_RETAINED_WEATHER_UPDATED_AT,
     CONDITION,
     DOMAIN,
     LOCATION,
@@ -202,6 +203,13 @@ class NWeatherMain(NWeatherDevice, WeatherEntity):  # pyright: ignore[reportInco
         """Write the weather state and send refreshed forecasts to subscribers."""
         super()._handle_coordinator_update()
         self.hass.async_create_task(self.async_update_listeners(None))
+
+    # HA declares a cached descriptor; this status follows every coordinator update.
+    @property
+    def extra_state_attributes(self) -> dict[str, object]:  # pyright: ignore[reportIncompatibleVariableOverride]
+        """Expose the real refresh time only while showing retained weather."""
+        updated_at = self.coordinator.retained_weather_updated_at
+        return {ATTR_RETAINED_WEATHER_UPDATED_AT: updated_at.isoformat()} if updated_at else {}
 
     # HA declares a cached descriptor; retain this integration's property semantics.
     @property

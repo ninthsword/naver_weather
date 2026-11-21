@@ -25,6 +25,8 @@ from playwright.sync_api import (
 USER, PASSWORD = "verifier", "synthetic-pass-123"
 AREA = "검증동"
 SECOND_AREA = "검증2동"
+COMPANION_SENSOR = "sensor.synthetic_companion_location"
+COMPANION_ADDRESS = {"Locality": "서울특별시", "Sub Locality": "은평구"}
 DEVICE = f"Naver Weather Custom {AREA} 날씨"
 SENSORS = ("현재온도", "미세먼지", "자외선등급")
 UNRELATED_ROW = "강수확률"  # visible in the entity list until the search filters it out
@@ -702,6 +704,126 @@ def verify_touch(browser: Browser, base: str, shots: Shots, errors: list[str]) -
         context.close()
 
 
+def add_current_location(page: Page) -> str:
+    page.evaluate(
+        """async ([sensor, address]) => {
+            const hass = document.querySelector("home-assistant").hass;
+            await hass.callApi("POST", `states/${sensor}`, {
+                state: "서울특별시 은평구",
+                attributes: {...address, Location: [37.59460, 126.92307]},
+            });
+            const path = "config/config_entries/flow";
+            const flow = await hass.callApi("POST", path, {handler: "naver_weather_custom"});
+            const result = await hass.callApi("POST", `${path}/${flow.flow_id}`, {
+                location_entity: sensor, today: true,
+            });
+            if (result.type !== "create_entry") throw new Error("Current-location entry was not created");
+        }""",
+        [COMPANION_SENSOR, COMPANION_ADDRESS],
+    )
+    return page.wait_for_function(
+        """() => {
+            const hass = document.querySelector("home-assistant")?.hass;
+            return Object.keys(hass?.entities ?? {}).find((id) => {
+                const entry = hass.entities[id];
+                return id.startsWith("weather.") && entry.platform === "naver_weather_custom"
+                    && hass.devices?.[entry.device_id]?.name === "Naver Weather Custom 현재 위치"
+                    && hass.states[id]?.state === "sunny";
+            });
+        }""",
+        timeout=WAIT_MS,
+    ).json_value()
+
+
+def set_retained_weather(page: Page, entity_id: str, updated_at: str | None) -> None:
+    """Change just the retained status for the isolated preview after real refreshes."""
+    page.evaluate(
+        """async ([id, updatedAt]) => {
+            const hass = document.querySelector("home-assistant").hass;
+            const state = hass.states[id];
+            const attributes = {...state.attributes};
+            if (updatedAt !== null) attributes.retained_weather_updated_at = updatedAt;
+            else delete attributes.retained_weather_updated_at;
+            await hass.callApi("POST", `states/${id}`, {state: state.state, attributes});
+        }""",
+        [entity_id, updated_at],
+    )
+
+
+def verify_current_location(page: Page, base: str, shots: Shots, common: dict[str, object]) -> None:
+    entity_id = add_current_location(page)
+    save_dashboard(page, [
+        {**common, "entities": [entity_id], "mode": "both"},
+        {**common, "entities": [entity_id], "mode": "hourly", "show_current": False},
+    ])
+    open_weather_view(page, base)
+    zones = page.evaluate("""() => [
+        document.querySelector("home-assistant").hass.config.time_zone,
+        Intl.DateTimeFormat().resolvedOptions().timeZone,
+    ]""")
+    assert zones == ["Asia/Seoul", "America/Los_Angeles"], zones
+    cards = page.locator("naver-weather-card")
+    combined, forecast_only = cards.nth(0), cards.nth(1)
+    expect(forecast_only.locator(".current-section")).to_have_count(0)
+    companion = page.evaluate(
+        """async (id) => {
+            const hass = document.querySelector("home-assistant").hass;
+            return (await hass.callWS({type: "naver_weather_custom/card_entities", entity_id: id})).entities;
+        }""",
+        entity_id,
+    )
+
+    def verify_location(title: str, dust: str, hourly: str) -> None:
+        page.wait_for_function(
+            """([locationId, dustId, title, dust]) => {
+                const {states} = document.querySelector("home-assistant").hass;
+                return states[locationId]?.state === title && states[dustId]?.state === dust;
+            }""",
+            arg=[companion["LocationInfo"], companion["FineDust"], title, dust],
+            timeout=WAIT_MS,
+        )
+        for card in (combined, forecast_only):
+            label = card.locator(".location-label")
+            expect(label).to_have_text(f"현재 위치 · {title}", timeout=WAIT_MS)
+            temperature(card.locator(".hourly-grid"), hourly, f"current location {title}")
+
+    verify_location("은평구 응암2동", "24", "22.0°")
+    page.evaluate(
+        """async ([sensor, address, id]) => {
+            const hass = document.querySelector("home-assistant").hass;
+            await hass.callApi("POST", `states/${sensor}`, {state: "서울특별시 은평구", attributes: address});
+            await hass.callApi("POST", "services/homeassistant/update_entity", {entity_id: id});
+        }""",
+        [COMPANION_SENSOR, COMPANION_ADDRESS, entity_id],
+    )
+    verify_location("서울특별시 은평구", "35", "27.0°")
+
+    for viewport in (DESKTOP, PHONE):
+        page.set_viewport_size(viewport)
+        for card in (combined, forecast_only):
+            expect(card.locator(".retained-refresh")).to_have_count(0)
+        shots.card(combined, f"current-location-normal-{viewport['width']}")
+
+    now = datetime.now(SEOUL)
+    page.clock.set_fixed_time(now)
+    retained_at = now - timedelta(minutes=20)
+    date = "" if retained_at.date() == now.date() else retained_at.strftime("%m.%d. ")
+    retained_label = f"최근 정상 갱신 {date}{retained_at:%H:%M}"
+    set_retained_weather(page, entity_id, retained_at.isoformat())
+    for viewport in (PHONE, DESKTOP):
+        page.set_viewport_size(viewport)
+        for card in (combined, forecast_only):
+            label = card.locator(".retained-refresh")
+            expect(label).to_have_text(retained_label, timeout=WAIT_MS)
+            expect(label).to_be_visible()
+        shots.card(combined, f"current-location-retained-{viewport['width']}")
+
+    set_retained_weather(page, entity_id, None)
+    for card in (combined, forecast_only):
+        expect(card.locator(".retained-refresh")).to_have_count(0, timeout=WAIT_MS)
+    print(f"Current-location cards: 은평구 응암2동 → 서울특별시 은평구; Seoul status '{retained_label}' in both modes.")
+
+
 def card_steps(page: Page, browser: Browser, base: str, shots: Shots, errors: list[str]) -> None:
     start_date = datetime.now(SEOUL).date()
     add_second_entry(page, base)
@@ -718,6 +840,14 @@ def card_steps(page: Page, browser: Browser, base: str, shots: Shots, errors: li
         open_weather_view(page, base)
         verify_cards(page, viewport["width"], shots, start_date, second)
     verify_touch(browser, base, shots, errors)
+    context = browser.new_context(viewport=DESKTOP, locale="ko-KR", timezone_id="America/Los_Angeles")
+    try:
+        location_page = context.new_page()
+        watch_card_errors(location_page, errors)
+        login(location_page, base)
+        verify_current_location(location_page, base, shots, common)
+    finally:
+        context.close()
     if errors:
         raise StepError("Weather card browser errors:\n" + "\n".join(errors))
 

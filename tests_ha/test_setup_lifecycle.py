@@ -11,6 +11,7 @@ from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
+from homeassistant.loader import async_get_integration
 from homeassistant.util import dt as dt_util
 from homeassistant.util.unit_system import US_CUSTOMARY_SYSTEM
 from multidict import CIMultiDict, CIMultiDictProxy
@@ -24,6 +25,7 @@ from custom_components.naver_weather_custom import api_nweather as api_module
 from custom_components.naver_weather_custom import coordinator as coordinator_module
 from custom_components.naver_weather_custom.api_nweather import NWeatherAPI
 from custom_components.naver_weather_custom.const import (
+    ATTR_RETAINED_WEATHER_UPDATED_AT,
     BSE_URL,
     CONF_AREA,
     CONF_LOCATION_ENTITY,
@@ -65,6 +67,8 @@ async def test_setup_refresh_forecast_and_unload(hass):
         assert entity_id is not None
         state = hass.states.get(entity_id)
         assert state is not None and state.attributes["temperature"] == 21
+        platform = await (await async_get_integration(hass, DOMAIN)).async_get_platform("diagnostics")
+        assert await platform.async_get_config_entry_diagnostics(hass, entry) == {"location_method": "고정 지역"}
         await coordinator.async_refresh()
         await hass.async_block_till_done()
         state = hass.states.get(entity_id)
@@ -105,6 +109,8 @@ async def test_forbidden_refreshes_keep_last_value_for_one_hour(hass):
     clock = [1000.0]
     with patch.object(NWeatherAPI, "update", update), patch.object(
         coordinator_module, "monotonic", lambda: clock[0]
+    ), patch.object(
+        coordinator_module, "time", lambda: clock[0]
     ):
         assert await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
@@ -122,12 +128,14 @@ async def test_forbidden_refreshes_keep_last_value_for_one_hour(hass):
             assert not coordinator.last_update_success
             state = hass.states.get(entity_id)
             assert state is not None and state.attributes["temperature"] == 7.5
+            assert state.attributes[ATTR_RETAINED_WEATHER_UPDATED_AT] == "1970-01-01T00:16:40+00:00"
 
         clock[0] = 1000.0 + 3600.0
         await coordinator.async_refresh()
         await hass.async_block_till_done()
         state = hass.states.get(entity_id)
         assert state is not None and state.state == STATE_UNAVAILABLE
+        assert ATTR_RETAINED_WEATHER_UPDATED_AT not in state.attributes
 
         fail = False
         temperature = 8.0
@@ -136,13 +144,22 @@ async def test_forbidden_refreshes_keep_last_value_for_one_hour(hass):
         state = hass.states.get(entity_id)
         assert state is not None and state.state != STATE_UNAVAILABLE
         assert state.attributes["temperature"] == 8.0
+        assert ATTR_RETAINED_WEATHER_UPDATED_AT not in state.attributes
 
         assert await hass.config_entries.async_unload(entry.entry_id)
         await hass.async_block_till_done()
 
 
 @pytest.mark.asyncio
-async def test_restart_during_refusal_starts_from_recent_stored_values(hass, hass_storage):
+@pytest.mark.parametrize(
+    "stored_method, expected",
+    [
+        pytest.param({}, "알 수 없음", id="older-snapshot"),
+        pytest.param({"location_method": {"__datetime__": "invalid"}}, "알 수 없음", id="invalid-method"),
+        pytest.param({"location_method": "sensor_address"}, "센서의 현재 주소", id="known-method"),
+    ],
+)
+async def test_restart_during_refusal_starts_from_recent_stored_values(hass, hass_storage, stored_method, expected):
     entry = MockConfigEntry(domain=DOMAIN, data={CONF_AREA: "날씨"}, unique_id="synthetic")
     entry.add_to_hass(hass)
     key = f"{DOMAIN}.{entry.entry_id}"
@@ -159,6 +176,7 @@ async def test_restart_during_refusal_starts_from_recent_stored_values(hass, has
                            "condition": "sunny", "native_temperature": 12,
                            "native_wind_speed": 1, "native_precipitation": 0}],
         "weathertype": "맑음",
+        **stored_method,
     }}
     with patch.object(NWeatherAPI, "update", update), patch.object(
         coordinator_module, "time", lambda: 1000.0 + 600
@@ -173,6 +191,9 @@ async def test_restart_during_refusal_starts_from_recent_stored_values(hass, has
         assert entity_id is not None
         state = hass.states.get(entity_id)
         assert state is not None and state.attributes["temperature"] == 13.8
+        assert state.attributes[ATTR_RETAINED_WEATHER_UPDATED_AT] == "1970-01-01T00:16:40+00:00"
+        platform = await (await async_get_integration(hass, DOMAIN)).async_get_platform("diagnostics")
+        assert await platform.async_get_config_entry_diagnostics(hass, entry) == {"location_method": expected}
         forecasts = await hass.services.async_call(
             "weather", "get_forecasts", {"entity_id": entity_id, "type": "hourly"},
             blocking=True, return_response=True,
@@ -185,6 +206,7 @@ async def test_restart_during_refusal_starts_from_recent_stored_values(hass, has
         await hass.async_block_till_done()
         state = hass.states.get(entity_id)
         assert state is not None and state.attributes["temperature"] == 9.0
+        assert ATTR_RETAINED_WEATHER_UPDATED_AT not in state.attributes
         assert coordinator.last_update_success
         assert await hass.config_entries.async_unload(entry.entry_id)
         await hass.async_block_till_done()
@@ -397,6 +419,9 @@ def _location_weather_markup(location, temperature):
     return f"""
         <div class="title_area _area_panel"><h2 class="title">{location}</h2></div>
         <div class="temperature_text">{temperature}°</div>
+        <div class="weather_info"><div><div><div class="weather_graphic">
+          <div class="weather_main"><i class="wt_icon ico_wt1"><span class="blind">맑음</span></i></div>
+        </div></div></div></div>
         <div class="open"><div class="graph_inner _hourly_weather"><ul>
           <li class="_li"><dl><dt class="time">12시</dt>
             <dd class="weather_box"><i class="wt_icon ico_wt1"><span>맑음</span></i></dd>
@@ -411,6 +436,18 @@ def _location_weather_markup(location, temperature):
     """
 
 
+def _location_replies(locations):
+    return {
+        BSE_URL.format(f"{query} {kind}"): Mock(text=AsyncMock(return_value=markup))
+        for query, title, temperature in locations
+        for kind, markup in (
+            ("날씨", _location_weather_markup(title, temperature)),
+            ("미세먼지", '<div class="state_info"><div class="grade"><div class="text_box">'
+                      f'<span class="num">{temperature + 3}</span></div></div></div>'),
+        )
+    }
+
+
 @pytest.mark.asyncio
 async def test_coordinate_move_commits_only_after_weather_and_air_succeed(hass, hass_storage, monkeypatch):
     location_entity = "sensor.synthetic_location"
@@ -422,15 +459,7 @@ async def test_coordinate_move_commits_only_after_weather_and_air_succeed(hass, 
         (location, kind): BSE_URL.format(f"서울특별시 {location} {kind}")
         for location in (first, second) for kind in ("날씨", "미세먼지")
     }
-    replies = {
-        urls[location, kind]: Mock(text=AsyncMock(return_value=markup))
-        for location, temperature in ((first, 21), (second, 28))
-        for kind, markup in (
-            ("날씨", _location_weather_markup(location, temperature)),
-            ("미세먼지", '<div class="state_info"><div class="grade"><div class="text_box">'
-                      f'<span class="num">{temperature + 3}</span></div></div></div>'),
-        )
-    }
+    replies = _location_replies([(f"서울특별시 {first}", first, 21), (f"서울특별시 {second}", second, 28)])
     rejected_air = Mock()
     rejected_air.raise_for_status.side_effect = _forbidden()
     second_air_url = urls[second, "미세먼지"]
@@ -462,7 +491,7 @@ async def test_coordinate_move_commits_only_after_weather_and_air_succeed(hass, 
     assert saved["result"] == payload
     assert saved["forecast"][0]["temperature"] == 23 and saved["forecast_hour"][0]["native_temperature"] == 22
 
-    hass.states.async_set(location_entity, "synthetic", {"Location": [37.59460, 126.92307]})
+    hass.states.async_set(location_entity, "synthetic", {"Locality": "서울특별시 은평구", "Sub Locality": "응암2동"})
     await coordinator.async_refresh()
     await flush_storage()
     assert not coordinator.last_update_success
@@ -471,8 +500,19 @@ async def test_coordinate_move_commits_only_after_weather_and_air_succeed(hass, 
     assert coordinator.data is payload and api.result is payload
     assert api.result[LOCATION[0]] == first and api.forecast is daily and api.forecast_hour is hourly
     assert hass_storage[save_key]["data"] == saved and coordinator.last_good_refresh == last_good_refresh
+    assert coordinator.last_location_method == saved["location_method"] == "coordinate_boundary"
+    weather_id = er.async_get(hass).async_get_entity_id(
+        "weather", DOMAIN, f"location_{entry.entry_id}:Naver Weather Custom"
+    )
+    assert weather_id is not None
+    state = hass.states.get(weather_id)
+    assert state is not None
+    assert state.attributes.get(ATTR_RETAINED_WEATHER_UPDATED_AT) == datetime.fromtimestamp(
+        saved["saved_at"], UTC
+    ).isoformat()
 
     replies[second_air_url] = second_air
+    hass.states.async_set(location_entity, "synthetic", {"Location": [37.59460, 126.92307]})
     await coordinator.async_refresh()
     await flush_storage()
     assert coordinator.last_update_success
@@ -482,12 +522,92 @@ async def test_coordinate_move_commits_only_after_weather_and_air_succeed(hass, 
     assert recovered["result"] == coordinator.data
     assert recovered["forecast"][0]["temperature"] == 30
     assert recovered["forecast_hour"][0]["native_temperature"] == 29
+    state = hass.states.get(weather_id)
+    assert state is not None and ATTR_RETAINED_WEATHER_UPDATED_AT not in state.attributes
     assert [call.args[0] for call in session.get.await_args_list] == [
         urls[location, kind]
         for location in (first, second, second) for kind in ("날씨", "미세먼지")
     ]
     assert await hass.config_entries.async_unload(entry.entry_id)
     await hass.async_block_till_done()
+
+
+async def test_fresh_coordinate_weather_gets_retained_timestamp_during_no_fetch_hold(hass, monkeypatch):
+    location_entity = "sensor.synthetic_coordinates"
+    coordinates = {"Location": [37.59460, 126.92307]}
+    hass.states.async_set(location_entity, "synthetic", coordinates)
+    entry = MockConfigEntry(domain=DOMAIN, data={CONF_LOCATION_ENTITY: location_entity})
+    entry.add_to_hass(hass)
+    replies = _location_replies([("서울특별시 은평구 응암2동", "은평구 응암2동", 21)])
+    session = Mock(get=AsyncMock(side_effect=lambda url, **_: replies[url]))
+    monkeypatch.setattr(api_module, "async_get_clientsession", lambda _hass: session)
+    monkeypatch.setattr(coordinator_module, "time", lambda: 1000.0)
+
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    coordinator = hass.data[DOMAIN]["coordinators"][entry.entry_id]
+    assert coordinator.last_update_success and session.get.await_count == 2
+    weather_id = er.async_get(hass).async_get_entity_id(
+        "weather", DOMAIN, f"location_{entry.entry_id}:Naver Weather Custom"
+    )
+    assert weather_id is not None
+    fresh = hass.states.get(weather_id)
+    assert fresh is not None and ATTR_RETAINED_WEATHER_UPDATED_AT not in fresh.attributes
+
+    hass.states.async_remove(location_entity)
+    await coordinator.async_refresh()
+    await hass.async_block_till_done()
+    assert coordinator.last_update_success and session.get.await_count == 2
+    retained = hass.states.get(weather_id)
+    assert retained is not None and retained.state == fresh.state == "sunny"
+    assert retained.attributes["temperature"] == fresh.attributes["temperature"] == 21
+    assert retained.attributes[ATTR_RETAINED_WEATHER_UPDATED_AT] == "1970-01-01T00:16:40+00:00"
+
+    hass.states.async_set(location_entity, "synthetic", coordinates)
+    await coordinator.async_refresh()
+    await hass.async_block_till_done()
+    assert coordinator.last_update_success and session.get.await_count == 4
+    fresh = hass.states.get(weather_id)
+    assert fresh is not None and fresh.state == "sunny"
+    assert ATTR_RETAINED_WEATHER_UPDATED_AT not in fresh.attributes
+
+
+async def test_native_diagnostics_only_returns_the_entrys_committed_location_method(hass, monkeypatch):
+    coordinate_sensor = "sensor.synthetic_coordinates"
+    address_sensor = "sensor.synthetic_address"
+    hass.states.async_set(coordinate_sensor, "synthetic", {
+        "Location": [37.59460, 126.92307], "Locality": "서울특별시", "Sub Locality": "은평구",
+    })
+    hass.states.async_set(address_sensor, "synthetic", {"Locality": "합성시", "Sub Locality": "합성동"})
+    entries = [
+        MockConfigEntry(
+            domain=DOMAIN, data={CONF_LOCATION_ENTITY: sensor},
+            options={"synthetic_option": "https://config.example.invalid/"},
+        )
+        for sensor in (coordinate_sensor, address_sensor)
+    ]
+    replies = _location_replies([
+        ("서울특별시 은평구 응암2동", "은평구 응암2동", 21), ("합성시 합성동", "합성시 합성동", 28),
+    ])
+    session = Mock(get=AsyncMock(side_effect=lambda url, **_: replies[url]))
+    monkeypatch.setattr(api_module, "async_get_clientsession", lambda _hass: session)
+    for entry in entries:
+        entry.add_to_hass(hass)
+        assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    assert session.get.await_count == 4
+
+    coordinate, address = entries
+    platform = await (await async_get_integration(hass, DOMAIN)).async_get_platform("diagnostics")
+    diagnostics = platform.async_get_config_entry_diagnostics
+    assert await diagnostics(hass, coordinate) == {"location_method": "좌표 기반 행정구역"}
+    assert await diagnostics(hass, address) == {"location_method": "센서의 현재 주소"}
+    assert session.get.await_count == 4
+
+    hass.states.async_remove(address_sensor)
+    await hass.data[DOMAIN]["coordinators"][address.entry_id].async_refresh()
+    assert session.get.await_count == 6
+    assert await diagnostics(hass, address) == {"location_method": "센서의 마지막 주소"}
 
 
 @pytest.mark.asyncio

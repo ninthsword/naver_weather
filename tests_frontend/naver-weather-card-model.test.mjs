@@ -66,6 +66,18 @@ test("forecast labels follow the local date, including a first item after today"
   }
 });
 
+test("retained refresh uses the Home Assistant clock and includes a prior day", () => {
+  const now = "2026-11-20T15:19:00Z";
+  const previous = "2026-11-20T14:51:00.123456+00:00";
+  assert.equal(model.retainedRefreshText(previous, now, SEOUL), "최근 정상 갱신 11.20. 23:51");
+  assert.equal(model.retainedRefreshText(previous, now, "UTC"), "최근 정상 갱신 14:51");
+  assert.equal(model.retainedRefreshText("2026-11-20T15:05:00Z", now, SEOUL), "최근 정상 갱신 00:05");
+  for (const value of [null, undefined, 123, "", "2026-11-20", "2026-11-20T15:05:00",
+    "2026-11-20T24:00:00Z", "2026-02-30T15:05:00Z", "2026-11-20T15:05:00+27:00", "unavailable"]) {
+    assert.equal(model.retainedRefreshText(value, now, SEOUL), null);
+  }
+});
+
 test("a configured workday list replaces the weekend coloring", () => {
   assert.equal(model.labelRed(0, undefined, 6), true);
   assert.equal(model.labelRed(1, undefined, 0), true);

@@ -1,4 +1,6 @@
 """Const for Naver Weather."""
+from enum import StrEnum
+
 import homeassistant.helpers.config_validation as cv
 import voluptuous as vol
 from homeassistant.components.sensor import SensorDeviceClass
@@ -30,6 +32,17 @@ CONF_LOCATION_ENTITY = "location_entity"
 CONF_TODAY = "today"
 CONF_REGION = "region"
 DEFAULT_AREA = "날씨"
+ATTR_RETAINED_WEATHER_UPDATED_AT = "retained_weather_updated_at"
+
+
+class LocationMethod(StrEnum):
+    """Strategy that supplied the last good payload's query."""
+
+    FIXED_AREA = "fixed_area"
+    COORDINATE_BOUNDARY = "coordinate_boundary"
+    SENSOR_ADDRESS = "sensor_address"
+    REMEMBERED_ADDRESS = "remembered_address"
+
 
 OPT_SCAN_INT = "scan_interval"
 DEFAULT_SCAN_INT = 15

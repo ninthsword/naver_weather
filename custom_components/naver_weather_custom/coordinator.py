@@ -2,7 +2,7 @@
 
 import asyncio
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from time import monotonic, time
 from typing import cast
 
@@ -13,7 +13,7 @@ from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .api_nweather import NWeatherAPI
-from .const import BRAND, DOMAIN
+from .const import BRAND, DOMAIN, LocationMethod
 
 UPDATE_INTERVAL = timedelta(minutes=10)
 FETCH_GAP = 30.0
@@ -69,6 +69,9 @@ class NWeatherDataUpdateCoordinator(DataUpdateCoordinator[dict[str, object]]):
         self._first_refresh = True
         self._fetch_shutdown = False
         self.last_good_refresh: float | None = None
+        self.last_location_method: LocationMethod | None = None
+        self._last_good_at: float | None = None
+        self._retaining_data = False
         self._store: Store[dict[str, object]] = Store(
             hass, STORAGE_VERSION, f"{DOMAIN}.{entry.entry_id}"
         )
@@ -95,18 +98,21 @@ class NWeatherDataUpdateCoordinator(DataUpdateCoordinator[dict[str, object]]):
                     ):
                         continue
                     area = None
+                    method = LocationMethod.FIXED_AREA
                     if self.api.location_entity is not None:
-                        area = await self.api.async_select_area()
+                        selection = await self.api.async_select_area()
                         if self._fetch_shutdown:
                             return self.data
-                        if area is None:
+                        if selection is None:
                             if self.data is not None and self.has_recent_data:
                                 self.logger.debug(
                                     "위치 센서 %s의 위치 정보를 기다리는 동안 현재 데이터를 유지합니다.",
                                     self.api.location_entity,
                                 )
+                                self._retaining_data = True
                                 return self.data
                             raise UpdateFailed("위치 센서의 위치 정보를 기다리는 중입니다.")
+                        area, method = selection
                     try:
                         if area is None:
                             await self.api.update()
@@ -117,14 +123,19 @@ class NWeatherDataUpdateCoordinator(DataUpdateCoordinator[dict[str, object]]):
                         self._first_refresh = False
                     break
         except Exception:
+            self._retaining_data = True
             # HA notifies entities only on the first of consecutive failures;
             # tell them once the last good payload has expired.
             if not self.has_recent_data:
                 self.async_update_listeners()
             raise
         self.last_good_refresh = monotonic()
+        self.last_location_method = method
+        self._last_good_at = time()
+        self._retaining_data = False
         payload = cast(dict[str, object], _encode({
-            "saved_at": time(),
+            "saved_at": self._last_good_at,
+            "location_method": method.value,
             "result": self.api.result,
             "forecast": self.api.forecast,
             "forecast_hour": self.api.forecast_hour,
@@ -149,12 +160,13 @@ class NWeatherDataUpdateCoordinator(DataUpdateCoordinator[dict[str, object]]):
     async def _async_restore_recent(self) -> bool:
         """Load the last good payload saved before a restart if it is recent enough."""
         try:
-            stored = _decode(await self._store.async_load())
+            stored = await self._store.async_load()
             if not isinstance(stored, dict):
                 return False
-            age = time() - float(stored["saved_at"])
-            result, forecast = stored["result"], stored["forecast"]
-            forecast_hour, weathertype = stored["forecast_hour"], stored["weathertype"]
+            saved_at = float(cast(float | str, stored["saved_at"]))
+            age = time() - saved_at
+            result, forecast = _decode(stored["result"]), _decode(stored["forecast"])
+            forecast_hour, weathertype = _decode(stored["forecast_hour"]), stored["weathertype"]
         except (KeyError, TypeError, ValueError):
             return False
         if not (
@@ -168,8 +180,21 @@ class NWeatherDataUpdateCoordinator(DataUpdateCoordinator[dict[str, object]]):
         self.api.result, self.api.forecast = result, forecast
         self.api.forecast_hour, self.api.weathertype = forecast_hour, weathertype
         self.last_good_refresh = monotonic() - age
+        try:
+            self.last_location_method = LocationMethod(stored.get("location_method"))
+        except ValueError:
+            self.last_location_method = None
+        self._last_good_at = saved_at
+        self._retaining_data = True
         self.data = result
         return True
+
+    @property
+    def retained_weather_updated_at(self) -> datetime | None:
+        """Return the last real refresh time while its recent payload is retained."""
+        if self._retaining_data and self._last_good_at is not None and self.has_recent_data:
+            return datetime.fromtimestamp(self._last_good_at, timezone.utc)
+        return None
 
     @property
     def has_recent_data(self) -> bool:

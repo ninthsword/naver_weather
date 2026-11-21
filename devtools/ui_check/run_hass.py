@@ -1,10 +1,9 @@
 """Run a real Home Assistant process with the Naver weather source replaced by synthetic data.
 
 Usage: python devtools/ui_check/run_hass.py CONFIG_DIR
-NWeatherAPI.update, the integration's only network call, is replaced as tests_ha's
-test_setup_lifecycle does: it fills the same result keys and forecast rows the parser fills,
-with synthetic values, and never opens a session. Home Assistant itself (core, frontend,
-config and options flows, registries) runs unmodified through its own entry point.
+Fixed entries use synthetic payloads. The current-location entry parses synthetic weather
+and air responses keyed by its real queries. Home Assistant itself runs unmodified through
+its own entry point.
 """
 
 from __future__ import annotations
@@ -12,7 +11,7 @@ from __future__ import annotations
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, Mock, patch
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
@@ -21,11 +20,13 @@ sys.path.insert(0, str(ROOT))
 # integration's websocket command schema resolves to the same validator HA uses for every message.
 import homeassistant  # noqa: E402, F401
 
+from custom_components.naver_weather_custom import api_nweather  # noqa: E402
 from custom_components.naver_weather_custom.api_nweather import (  # noqa: E402
     KST,
     NWeatherAPI,
 )
 from custom_components.naver_weather_custom.const import (  # noqa: E402
+    BSE_URL,
     CAI_GRADE,
     CO_GRADE,
     CONDITION,
@@ -60,9 +61,42 @@ from custom_components.naver_weather_custom.const import (  # noqa: E402
     WIND_SPEED,
 )
 
+_REAL_UPDATE = NWeatherAPI.update
 
-async def _synthetic_update(api: NWeatherAPI) -> None:
-    """Fill the parser's result keys and forecast rows with synthetic values; opens no session."""
+
+def _location_session() -> Mock:
+    """Return raw responses only for the supported synthetic Companion queries."""
+    pages = {}
+    for query, title, temp, dust in (
+        ("서울특별시 은평구 응암2동", "은평구 응암2동", 21, 24),
+        ("서울특별시 은평구", "서울특별시 은평구", 26, 35),
+    ):
+        pages[BSE_URL.format(f"{query} 날씨")] = f"""
+          <div class="title_area _area_panel"><h2 class="title">{title}</h2></div>
+          <div class="temperature_text">{temp}°</div>
+          <div class="weather_info"><div><div><div class="weather_graphic">
+            <div class="weather_main"><i class="wt_icon ico_wt1"><span class="blind">맑음</span></i></div>
+          </div></div></div></div>
+          <div class="open"><div class="graph_inner _hourly_weather"><ul>
+            <li class="_li"><dl><dt class="time">12시</dt>
+              <dd class="weather_box"><i class="wt_icon ico_wt1"><span>맑음</span></i></dd>
+              <dd><span class="num">{temp + 1}</span></dd>
+            </dl></li>
+          </ul></div></div>
+        """
+        pages[BSE_URL.format(f"{query} 미세먼지")] = (
+            '<div class="state_info"><div class="grade"><div class="text_box">'
+            f'<span class="num">{dust}</span></div></div></div>'
+        )
+
+    return Mock(get=AsyncMock(side_effect=lambda url, **_: Mock(text=AsyncMock(return_value=pages[url]))))
+
+
+async def _synthetic_update(api: NWeatherAPI, area: str | None = None) -> None:
+    """Leave the moving entry on the normal update path."""
+    if api.location_entity is not None:
+        await _REAL_UPDATE(api, area)
+        return
     now = datetime.now(KST).replace(minute=0, second=0, microsecond=0)
     published = now.isoformat()
     second = "검증2동" in (api.area or "")
@@ -135,7 +169,10 @@ async def _synthetic_update(api: NWeatherAPI) -> None:
 
 def main() -> int:
     config_dir = sys.argv[1]
-    with patch.object(NWeatherAPI, "update", _synthetic_update):
+    with (
+        patch.object(NWeatherAPI, "update", _synthetic_update),
+        patch.object(api_nweather, "async_get_clientsession", return_value=_location_session()),
+    ):
         from homeassistant.__main__ import main as hass_main
 
         sys.argv = ["hass", "--config", config_dir, "--skip-pip"]
