@@ -76,7 +76,7 @@ async def test_frontend_registration_failure_keeps_setup_available(hass, monkeyp
 
 
 async def _setup_entry(hass, area, *, location_entity=None, update=None):
-    async def synthetic(api):
+    async def synthetic(api, area: str | None = None):
         api.result = {NOW_TEMP[0]: "21.5", "Condition": "sunny", LOCATION[0]: "검증시 검증구"}
 
     data = {CONF_AREA: area, CONF_TODAY: True}

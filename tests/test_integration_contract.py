@@ -10,7 +10,7 @@ import unittest
 from datetime import datetime
 from itertools import pairwise
 from pathlib import Path
-from unittest.mock import AsyncMock, Mock, PropertyMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 REPOSITORY = Path(__file__).resolve().parents[1]
 INTEGRATION = REPOSITORY / "custom_components" / "naver_weather_custom"
@@ -352,6 +352,9 @@ class FakeHass:
         self.data: dict[str, object] = {}
         self.config = types.SimpleNamespace(components=set())
         self.http = None
+
+    async def async_add_executor_job(self, function, *args):
+        return await asyncio.to_thread(function, *args)
 
 
 class FakeNode:
@@ -1247,16 +1250,15 @@ class LocationForecastContractTest(unittest.TestCase):
         api.result = {"Humidity": "61"}
         api.result_area = "테스트시 첫동 날씨"
 
-        def move():
-            api.hass.states[api.location_entity].attributes = {
-                "Locality": "다른시", "Sub Locality": "다음동"
-            }
+        states = Mock(wraps=api.hass.states)
+        state = api.hass.states[api.location_entity]
 
-        area_getter = vars(type(api))["area"].fget
-        with patch.object(type(api), "area", new_callable=PropertyMock) as area:
-            area.side_effect = lambda: area_getter(api)
+        def move():
+            state.attributes = {"Locality": "다른시", "Sub Locality": "다음동"}
+
+        with patch.object(api.hass, "states", states):
             session = self._update_api(api, on_request=move)
-            self.assertEqual(area.call_count, 1)
+            states.get.assert_called_once_with(api.location_entity)
         self.assertEqual(
             [call.args[0] for call in session.get.await_args_list],
             [const_module.BSE_URL.format("테스트시 첫동 날씨"),
@@ -1265,6 +1267,109 @@ class LocationForecastContractTest(unittest.TestCase):
         self.assertEqual(api.result_area, "테스트시 첫동 날씨")
         self.assertEqual(api.result["Humidity"], "61")
         self.assertEqual(api.area, "다른시 다음동 날씨")
+
+    def test_coordinate_query_uses_exact_direct_and_browser_urls(self):
+        point = (37.60069, 126.92676)
+        weather_url = "https://search.naver.com/search.naver?query=서울특별시 은평구 응암1동 날씨"
+        fallback_air_url = "https://search.naver.com/search.naver?query=서울특별시 은평구 응암1동 미세먼지"
+        linked_air_url = "https://search.naver.com/search.naver?query=은평구+응암1동+미세먼지"
+        browser = "https://browser.invalid"
+        for use_browser, use_link in ((False, False), (False, True), (True, False), (True, True)):
+            with self.subTest(browser=use_browser, air_link=use_link):
+                api = self._location_api({"Location": point, "Locality": "예전시"})
+                if use_browser:
+                    api.entry.options["browser_url"] = browser
+                link = Mock(get=Mock(return_value=linked_air_url if use_link else "https://other.invalid/"))
+                card = FakeNode(selections={"strong.title": [FakeNode("미세먼지")], "a[href]": [link]})
+                soup = Mock(
+                    select=Mock(side_effect=lambda selector, card=card: [card] if selector == api_module.AIR_LINK_ITEM_SELECTOR else []),
+                    select_one=Mock(return_value=None),
+                    find=Mock(return_value=None),
+                )
+                response = Mock(status=200, text=AsyncMock(return_value="<html></html>"))
+                session = Mock(get=AsyncMock(return_value=response))
+                executor = AsyncMock(wraps=api.hass.async_add_executor_job)
+                coordinator = coordinator_module.NWeatherDataUpdateCoordinator(api.hass, api, api.entry)
+                with (
+                    patch.object(api.hass, "async_add_executor_job", executor),
+                    patch.object(api_module, "async_get_clientsession", return_value=session),
+                    patch.object(api_module, "BeautifulSoup", return_value=soup),
+                    self.assertLogs(api_module._LOGGER, level="DEBUG") as logs,
+                ):
+                    asyncio.run(coordinator.async_config_entry_first_refresh())
+                executor.assert_awaited_once_with(api_module.resolve_admin_area, *point)
+                urls = [weather_url, linked_air_url if use_link else fallback_air_url]
+                requests = session.get.await_args_list
+                self.assertEqual(len(requests), 2)
+                for request, url in zip(requests, urls, strict=True):
+                    if use_browser:
+                        self.assertEqual(request.args, (browser + "/render",))
+                        self.assertEqual(request.kwargs["params"], {"url": url})
+                    else:
+                        self.assertEqual(request.args, (url,))
+                        self.assertNotIn("params", request.kwargs)
+                for coordinate in point:
+                    self.assertNotIn(str(coordinate), repr(requests))
+                    self.assertNotIn(str(coordinate), repr(coordinator._store.data))
+                    self.assertNotIn(str(coordinate), " ".join(logs.output))
+
+    def test_coordinate_win_remembers_current_name_and_keeps_snapshot(self):
+        state_id = "sensor.synthetic_location"
+        api = self._location_api({"Locality": "이전시"})
+        api.hass.states[state_id].attributes = {
+            "Location": [37.59460, 126.92307], "Locality": " 새시 & ", "Sub Locality": " 새동# ",
+        }
+
+        async def resolve(function, *point):
+            api.hass.states[state_id].attributes = {"Locality": "다음시", "Location": [37.59223, 126.91573]}
+            return await asyncio.to_thread(function, *point)
+
+        with patch.object(api.hass, "async_add_executor_job", resolve):
+            requests = self._update_api(api).get.await_args_list
+        self.assertEqual(
+            [request.args[0] for request in requests],
+            [const_module.BSE_URL.format("서울특별시 은평구 응암2동 날씨"),
+             const_module.BSE_URL.format("서울특별시 은평구 응암2동 미세먼지")],
+        )
+        api.hass.states.clear()
+        self.assertEqual(
+            [request.args[0] for request in self._update_api(api).get.await_args_list],
+            [const_module.BSE_URL.format("새시 새동 날씨"),
+             const_module.BSE_URL.format("새시 새동 미세먼지")],
+        )
+        api.hass.states[state_id] = types.SimpleNamespace(
+            attributes={"Location": [0.0, 0.0], "Locality": "대체시"}
+        )
+        self.assertEqual(
+            [request.args[0] for request in self._update_api(api).get.await_args_list],
+            [const_module.BSE_URL.format("대체시 날씨"), const_module.BSE_URL.format("대체시 미세먼지")],
+        )
+
+    def test_coordinate_only_entry_waits_without_advancing_fetch_gap_when_location_is_lost(self):
+        api = self._location_api({"Location": [37.59223, 126.91573]})
+        coordinator = coordinator_module.NWeatherDataUpdateCoordinator(api.hass, api, api.entry)
+        soup = Mock()
+        soup.select.return_value = []
+        soup.select_one.return_value = None
+        soup.find.return_value = None
+        session = Mock(get=AsyncMock(return_value=Mock(text=AsyncMock(return_value="<html></html>"))))
+        with (
+            patch.object(api_module, "async_get_clientsession", return_value=session),
+            patch.object(api_module, "BeautifulSoup", return_value=soup),
+            patch.object(coordinator_module, "FETCH_GAP", 0),
+            patch.object(coordinator_module, "monotonic", return_value=100.0) as clock,
+        ):
+            asyncio.run(coordinator.async_config_entry_first_refresh())
+            self.assertIn("응암3동 날씨", session.get.await_args_list[0].args[0])
+            fetch = api.hass.data[f"{const_module.DOMAIN}_fetch"]
+            self.assertEqual(fetch.last_end, 100.0)
+            api.hass.states.clear()
+            session.get.reset_mock()
+            clock.return_value = 110.0
+            self.assertIs(asyncio.run(coordinator._async_update_data()), coordinator.data)
+            self.assertEqual(fetch.last_end, 100.0)
+            self.assertEqual(coordinator.last_good_refresh, 100.0)
+            session.get.assert_not_awaited()
 
     def test_missing_humidity_is_retained_only_for_the_same_location(self):
         for previous_area, summary, expected in (

@@ -2,7 +2,7 @@
 
 from asyncio import Event
 from datetime import UTC, datetime, timedelta
-from unittest.mock import patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from aiohttp import ClientResponseError, RequestInfo
@@ -20,6 +20,7 @@ from pytest_homeassistant_custom_component.common import (
 )
 from yarl import URL
 
+from custom_components.naver_weather_custom import api_nweather as api_module
 from custom_components.naver_weather_custom import coordinator as coordinator_module
 from custom_components.naver_weather_custom.api_nweather import NWeatherAPI
 from custom_components.naver_weather_custom.const import (
@@ -28,6 +29,8 @@ from custom_components.naver_weather_custom.const import (
     CONF_LOCATION_ENTITY,
     CONF_TODAY,
     DOMAIN,
+    LOCATION,
+    NDUST,
     NOW_TEMP,
     WEATHER_INFO,
 )
@@ -344,8 +347,8 @@ async def test_location_queries_change_on_refresh_while_all_entry_ids_stay_stabl
     fixed.add_to_hass(hass)
     queries = []
 
-    async def update(api):
-        queries.append((api.entry.entry_id, api.area))
+    async def update(api, area=None):
+        queries.append((api.entry.entry_id, area or api.area))
         _set_forecast_payload(api)
 
     with patch.object(NWeatherAPI, "update", update):
@@ -385,6 +388,108 @@ async def test_location_queries_change_on_refresh_while_all_entry_ids_stay_stabl
         await hass.async_block_till_done()
 
 
+def _location_weather_markup(location, temperature):
+    day = datetime.now(api_module.KST).strftime("%m.%d.")
+    weather = (
+        '<span><i class="wt_icon ico_wt1"><span>맑음</span></i>'
+        '<span class="weather_left"><span class="rainfall">10%</span></span></span>'
+    )
+    return f"""
+        <div class="title_area _area_panel"><h2 class="title">{location}</h2></div>
+        <div class="temperature_text">{temperature}°</div>
+        <div class="open"><div class="graph_inner _hourly_weather"><ul>
+          <li class="_li"><dl><dt class="time">12시</dt>
+            <dd class="weather_box"><i class="wt_icon ico_wt1"><span>맑음</span></i></dd>
+            <dd><span class="num">{temperature + 1}</span></dd>
+          </dl></li>
+        </ul></div></div>
+        <div class="weekly_forecast_area _toggle_panel"><ul><li class="week_item"><div>
+          <div class="cell_date"><span><strong class="day">오늘</strong><span class="date">{day}</span></span></div>
+          <div class="cell_weather">{weather}{weather}</div>
+          <span class="lowest">10°</span><span class="highest">{temperature + 2}°</span>
+        </div></li></ul></div>
+    """
+
+
+@pytest.mark.asyncio
+async def test_coordinate_move_commits_only_after_weather_and_air_succeed(hass, hass_storage, monkeypatch):
+    location_entity = "sensor.synthetic_location"
+    entry = MockConfigEntry(domain=DOMAIN, data={CONF_LOCATION_ENTITY: location_entity, CONF_TODAY: True})
+    entry.add_to_hass(hass)
+    hass.states.async_set(location_entity, "synthetic", {"Location": [37.60069, 126.92676]})
+    first, second = "은평구 응암1동", "은평구 응암2동"
+    urls = {
+        (location, kind): BSE_URL.format(f"서울특별시 {location} {kind}")
+        for location in (first, second) for kind in ("날씨", "미세먼지")
+    }
+    replies = {
+        urls[location, kind]: Mock(text=AsyncMock(return_value=markup))
+        for location, temperature in ((first, 21), (second, 28))
+        for kind, markup in (
+            ("날씨", _location_weather_markup(location, temperature)),
+            ("미세먼지", '<div class="state_info"><div class="grade"><div class="text_box">'
+                      f'<span class="num">{temperature + 3}</span></div></div></div>'),
+        )
+    }
+    rejected_air = Mock()
+    rejected_air.raise_for_status.side_effect = _forbidden()
+    second_air_url = urls[second, "미세먼지"]
+    second_air = replies[second_air_url]
+    replies[second_air_url] = rejected_air
+
+    async def get(url, **_kwargs):
+        return replies[url]
+
+    session = Mock(get=AsyncMock(side_effect=get))
+    monkeypatch.setattr(api_module, "async_get_clientsession", lambda _hass: session)
+    save_key = f"{DOMAIN}.{entry.entry_id}"
+
+    async def flush_storage():
+        async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=5))
+        await hass.async_block_till_done()
+
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    await flush_storage()
+    coordinator = hass.data[DOMAIN]["coordinators"][entry.entry_id]
+    api = coordinator.api
+    payload, daily, hourly = coordinator.data, api.forecast, api.forecast_hour
+    saved = hass_storage[save_key]["data"]
+    last_good_refresh = coordinator.last_good_refresh
+    assert payload[LOCATION[0]] == first
+    assert payload[NDUST[0]] == "24"
+    assert daily[0]["temperature"] == 23 and hourly[0]["native_temperature"] == 22
+    assert saved["result"] == payload
+    assert saved["forecast"][0]["temperature"] == 23 and saved["forecast_hour"][0]["native_temperature"] == 22
+
+    hass.states.async_set(location_entity, "synthetic", {"Location": [37.59460, 126.92307]})
+    await coordinator.async_refresh()
+    await flush_storage()
+    assert not coordinator.last_update_success
+    replies[urls[second, "날씨"]].text.assert_awaited_once_with()
+    rejected_air.raise_for_status.assert_called_once_with()
+    assert coordinator.data is payload and api.result is payload
+    assert api.result[LOCATION[0]] == first and api.forecast is daily and api.forecast_hour is hourly
+    assert hass_storage[save_key]["data"] == saved and coordinator.last_good_refresh == last_good_refresh
+
+    replies[second_air_url] = second_air
+    await coordinator.async_refresh()
+    await flush_storage()
+    assert coordinator.last_update_success
+    assert coordinator.data[LOCATION[0]] == second and coordinator.data[NDUST[0]] == "31"
+    assert api.forecast[0]["temperature"] == 30 and api.forecast_hour[0]["native_temperature"] == 29
+    recovered = hass_storage[save_key]["data"]
+    assert recovered["result"] == coordinator.data
+    assert recovered["forecast"][0]["temperature"] == 30
+    assert recovered["forecast_hour"][0]["native_temperature"] == 29
+    assert [call.args[0] for call in session.get.await_args_list] == [
+        urls[location, kind]
+        for location in (first, second, second) for kind in ("날씨", "미세먼지")
+    ]
+    assert await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
+
+
 @pytest.mark.asyncio
 async def test_location_without_locality_at_startup_keeps_stored_values_without_error(hass, hass_storage, caplog):
     location_entity = "sensor.synthetic_location"
@@ -399,8 +504,8 @@ async def test_location_without_locality_at_startup_keeps_stored_values_without_
     }}
     areas = []
 
-    async def update(api):
-        areas.append(api.area)
+    async def update(api, area=None):
+        areas.append(area)
         api.result = {NOW_TEMP[0]: 9.0}
 
     with patch.object(NWeatherAPI, "update", update), patch.object(

@@ -2,7 +2,7 @@
 
 import logging
 import re
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Literal, Protocol, overload
 from urllib.parse import urldefrag, urljoin, urlsplit
@@ -11,6 +11,7 @@ from aiohttp import ClientError, ClientTimeout
 from bs4.element import Tag
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
+from .admin_area import location_coordinates, resolve_admin_area
 from .bs4_compat import BeautifulSoup
 from .const import (
     BRAND,
@@ -651,19 +652,37 @@ class NWeatherAPI:
         location_entity = self.location_entity
         if location_entity is not None:
             state = self.hass.states.get(location_entity)
-            locality = location_part(state.attributes.get("Locality")) if state else None
-            if locality is None:
-                return self._last_location_area
-            sub_locality = location_part(state.attributes.get("Sub Locality"))
-            self._last_location_area = (
-                f"{locality} {sub_locality} 날씨" if sub_locality else f"{locality} 날씨"
-            )
-            return self._last_location_area
+            return self._named_location_area(state.attributes if state else {})
         data = self.entry.options.get(CONF_AREA, self.entry.data.get(CONF_AREA))
         if data == "날씨":
             return data
         else:
             return data + " 날씨"
+
+    def _named_location_area(self, attributes: Mapping[str, object]) -> str | None:
+        locality = location_part(attributes.get("Locality"))
+        if locality is not None:
+            sub_locality = location_part(attributes.get("Sub Locality"))
+            self._last_location_area = (
+                f"{locality} {sub_locality} 날씨" if sub_locality else f"{locality} 날씨"
+            )
+        return self._last_location_area
+
+    async def async_select_area(self) -> str | None:
+        """Select a query from one reading and retain the latest valid named fallback."""
+        location_entity = self.location_entity
+        if location_entity is None:
+            return self.area
+        state = self.hass.states.get(location_entity)
+        attributes = state.attributes if state else {}
+        named_area = self._named_location_area(attributes)
+        coordinates = location_coordinates(attributes.get("Location"))
+        if coordinates is not None:
+            region = await self.hass.async_add_executor_job(resolve_admin_area, *coordinates)
+            region = location_part(region)
+            if region is not None:
+                return f"{region} 날씨"
+        return named_area
 
     @property
     def location_entity(self) -> str | None:
@@ -806,12 +825,13 @@ class NWeatherAPI:
             _LOGGER.debug("브라우저 서비스 오류: %s", type(error).__name__)
         return None
 
-    async def update(self):
-        """Update function for updating api information."""
+    async def update(self, area: str | None = None):
+        """Fetch weather and air data for a single selected area."""
         try:
-            area = self.area
             if area is None:
-                raise ValueError(f"위치 센서 {self.location_entity}의 Locality 속성이 없습니다.")
+                area = await self.async_select_area()
+            if area is None:
+                raise ValueError(f"위치 센서 {self.location_entity}의 위치 정보가 없습니다.")
             url = BSE_URL.format(area)
             url_air = url.replace("날씨", "미세먼지")
 

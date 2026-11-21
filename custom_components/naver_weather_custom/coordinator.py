@@ -75,18 +75,6 @@ class NWeatherDataUpdateCoordinator(DataUpdateCoordinator[dict[str, object]]):
 
     async def _async_update_data(self) -> dict[str, object]:
         """Refresh the API payload and expose it to all subscribed entities."""
-        if self.api.location_entity is not None and self.api.area is None:
-            # The phone's location sensor has no Locality yet (usually just after HA starts):
-            # keep the recent payload and ask again at the next refresh instead of failing.
-            if self.data is not None and self.has_recent_data:
-                self.logger.debug("Location of %s not known yet; keeping the current data",
-                                  self.api.location_entity)
-                return self.data
-            # As for a failed fetch: HA writes states only when success changes, so tell
-            # entities once the last good payload has expired.
-            if not self.has_recent_data:
-                self.async_update_listeners()
-            raise UpdateFailed("위치 센서의 위치 정보를 기다리는 중입니다.")
         fetch: _FetchState | None = self.hass.data.get(f"{DOMAIN}_fetch")
         if fetch is None:
             fetch = self.hass.data[f"{DOMAIN}_fetch"] = _FetchState()
@@ -106,8 +94,24 @@ class NWeatherDataUpdateCoordinator(DataUpdateCoordinator[dict[str, object]]):
                         and monotonic() < fetch.last_end + FETCH_GAP
                     ):
                         continue
+                    area = None
+                    if self.api.location_entity is not None:
+                        area = await self.api.async_select_area()
+                        if self._fetch_shutdown:
+                            return self.data
+                        if area is None:
+                            if self.data is not None and self.has_recent_data:
+                                self.logger.debug(
+                                    "위치 센서 %s의 위치 정보를 기다리는 동안 현재 데이터를 유지합니다.",
+                                    self.api.location_entity,
+                                )
+                                return self.data
+                            raise UpdateFailed("위치 센서의 위치 정보를 기다리는 중입니다.")
                     try:
-                        await self.api.update()
+                        if area is None:
+                            await self.api.update()
+                        else:
+                            await self.api.update(area)
                     finally:
                         fetch.last_end = monotonic()
                         self._first_refresh = False
